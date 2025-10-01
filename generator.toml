@@ -1,0 +1,4 @@
+[general]
+library_name = "libconopt"
+output_file_path = "./LibConopt.jl"
+module_name = "LibConopt"
