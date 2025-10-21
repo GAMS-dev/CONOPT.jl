@@ -1,0 +1,11 @@
+name = "Conopt"
+uuid = "d9ad0738-0ae8-416d-b8ee-a56302d35586"
+repo = "TODO"
+version = "TODO"
+
+[deps]
+
+[extras]
+
+[targets]
+test = ["Test"]

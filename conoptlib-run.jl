@@ -1,4 +1,4 @@
-include("./LibConopt.jl")
+include("src/gen/libconopt.jl")
 using .LibConopt
 
 tpl = ntuple(i->0, 175)
