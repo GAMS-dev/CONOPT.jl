@@ -1,3 +1,7 @@
+#=
+Running this script generates the .jl Conopt library in the location specified in generator.toml.
+=#
+
 using Clang.Generators
 
 cd(@__DIR__)
