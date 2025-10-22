@@ -1,7 +1,8 @@
 # ============================ /test/MOI_wrapper.jl ============================
 module TestConopt
 
-import Conopt
+include("../src/Conopt.jl")
+#import Conopt
 using Test
 
 import MathOptInterface as MOI
