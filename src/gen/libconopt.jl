@@ -87,12 +87,16 @@ function COIGET_RangeErrors(cntvect)
     ccall((:COIGET_RangeErrors, libconopt), Cint, (coiHandle_t,), cntvect)
 end
 
+#function COI_Create(cntvect)
+#    ccall((:COI_Create, libconopt), Cint, (Ptr{coiHandle_t},), cntvect)
+#end
+
 function COI_Create(cntvect)
-    ccall((:COI_Create, libconopt), Cint, (Ptr{coiHandle_t},), cntvect)
+    ccall((:COI_Create, libconopt), Cint, (Ptr{Ptr{Cvoid}},), cntvect)
 end
 
 function COI_Free(cntvect)
-    ccall((:COI_Free, libconopt), Cint, (Ptr{coiHandle_t},), cntvect)
+    ccall((:COI_Free, libconopt), Cint, (Ptr{Ptr{Cvoid}},), cntvect)
 end
 
 function COI_Finalize()
@@ -248,11 +252,11 @@ function COIDEF_Solution(cntvect, coi_solution)
 end
 
 function COIDEF_Message(cntvect, coi_message)
-    ccall((:COIDEF_Message, libconopt), Cint, (coiHandle_t, COI_MESSAGE_t), cntvect, coi_message)
+    ccall((:COIDEF_Message, libconopt), Cint, (Ptr{Cvoid}, COI_MESSAGE_t), cntvect, coi_message)
 end
 
 function COIDEF_ErrMsg(cntvect, coi_errmsg)
-    ccall((:COIDEF_ErrMsg, libconopt), Cint, (coiHandle_t, COI_ERRMSG_t), cntvect, coi_errmsg)
+    ccall((:COIDEF_ErrMsg, libconopt), Cint, (Ptr{Cvoid}, COI_ERRMSG_t), cntvect, coi_errmsg)
 end
 
 function COIDEF_Progress(cntvect, coi_progress)
