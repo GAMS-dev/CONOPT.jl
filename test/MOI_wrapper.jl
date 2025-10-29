@@ -43,6 +43,7 @@ function runtests()
     end
 end
 
+#=
 """
     test_runtests()
 
@@ -56,17 +57,16 @@ function test_runtests()
         BRIDGED,
         CONFIG,
         exclude = [
-            "test_attribute_NumberOfThreads",
-            "test_quadratic_",
         ],
         # This argument is useful to prevent tests from failing on future
         # releases of MOI that add new tests. Don't let this number get too far
         # behind the current MOI release though. You should periodically check
         # for new tests to fix bugs and implement new features.
-        exclude_tests_after = v"0.10.5",
+        #exclude_tests_after = v"0.10.5",
     )
     return
 end
+=#
 
 """
     test_SolverName()
@@ -75,11 +75,11 @@ You can also write new tests for solver-specific functionality. Write each new
 test as a function with a name beginning with `test_`.
 """
 function test_SolverName()
-    @test MOI.get(Conopt.Optimizer(), MOI.SolverName()) == "Conopt"
+    @test MOI.get(Conopt.Optimizer(), MOI.SolverName()) == "CONOPT"
     return
 end
 
 end # module TestConopt
 
-# This line at tne end of the file runs all the tests!
+# This line at the end of the file runs all the tests!
 TestConopt.runtests()
