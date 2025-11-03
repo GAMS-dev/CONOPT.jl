@@ -15,6 +15,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 end
 
 
+
 # implementations of some basic functions
 
 function Base.summary(io::IO, model::Optimizer)
@@ -30,6 +31,7 @@ function MOI.empty!(model::Optimizer)
     # empty the model (TODO: does this also need to free the C problem?)
     return
 end
+
 
 
 # get, set and supports functions for various Optimizer attributes
@@ -50,7 +52,19 @@ function MOI.get(::Optimizer, ::MOI.SolverName)::String
     return "CONOPT"
 end
 
-# TODO get solver version, perhaps raw solver
+# TODO get raw solver
+
+# solver version
+function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
+    major = Ref{Cint}(0)
+    minor = Ref{Cint}(0)
+    patch = Ref{Cint}(0)
+    coierror = LibConopt.COIGET_Version(major, minor, patch)
+    if coierror != 0
+        error("could not get CONOPT version")
+    end
+    return string(major[], ".", minor[], ".", patch[])
+end
 
 # time limit
 MOI.supports(::Optimizer, ::MOI.TimeLimitSec) = true
@@ -80,3 +94,19 @@ end
 MOI.get(model::Optimizer, ::MOI.TimeLimitSec) = model.timelimit
 
 
+
+###
+### Optimize and post-optimize functions
+###
+
+function MOI.optimize!(model::Optimizer)
+    result = LibConopt.COI_Solve(cntvect)
+    #t = time()
+    #model.variable_primal = nothing
+    #model.constraint_primal = nothing
+    #model.Cbc_solve_return_code = Cbc_solve(model)
+    #model.has_solution = _result_count(model)
+    #model.solve_time = time() - t
+    #model.termination_status = _termination_status(model)
+    return
+end
