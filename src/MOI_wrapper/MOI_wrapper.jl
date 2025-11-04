@@ -1,7 +1,10 @@
 mutable struct Optimizer <: MOI.AbstractOptimizer
-    cntvect::Ptr{Cvoid}     # pointer to the CONOPT control vector
-    silent::Bool            # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
-    timelimit::Real         # time limit in seconds
+    cntvect::Ptr{Cvoid}         # pointer to the CONOPT control vector
+    silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
+    timelimit::Real             # time limit in seconds
+    name::String                # name of the model
+    params::Dict{String,String} # solver parameters
+    threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
     function Optimizer()
         cntvect = Ptr{Cvoid}()
         coierror = LibConopt.COI_Create(Ref{Ptr{Cvoid}}(cntvect))
@@ -36,23 +39,10 @@ end
 
 # get, set and supports functions for various Optimizer attributes
 
-# silent
-MOI.supports(::Optimizer, ::MOI.Silent) = true
-function MOI.set(model::Optimizer, ::MOI.Silent, value::Bool)
-    if value == model.silent
-        return
-    end
-    model.silent = value
-    return
-end
-MOI.get(model::Optimizer, ::MOI.Silent) = model.silent
-
 # solver name
 function MOI.get(::Optimizer, ::MOI.SolverName)::String
     return "CONOPT"
 end
-
-# TODO get raw solver
 
 # solver version
 function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
@@ -66,8 +56,34 @@ function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
     return string(major[], ".", minor[], ".", patch[])
 end
 
+# raw solver
+MOI.get(::Optimizer, ::MOI.RawSolver) = model.cntvect
+
+# model name
+MOI.get(::Optimizer, ::MOI.Name) = model.name
+function MOI.set(::Optimizer, ::MOI.Name, value::String)
+    if value == model.name
+        return
+    end
+    model.name = value
+    return
+end
+MOI.supports(::Optimizer, ::MOI.Name) = true
+
+# silent
+MOI.supports(::Optimizer, ::MOI.Silent) = true
+function MOI.set(model::Optimizer, ::MOI.Silent, value::Bool)
+    if value == model.silent
+        return
+    end
+    model.silent = value
+    return
+end
+MOI.get(model::Optimizer, ::MOI.Silent) = model.silent
+
 # time limit
 MOI.supports(::Optimizer, ::MOI.TimeLimitSec) = true
+
 function MOI.set(::Optimizer, ::MOI.TimeLimitSec, value::Real)
     if value == model.timelimit
         return
@@ -79,8 +95,9 @@ function MOI.set(::Optimizer, ::MOI.TimeLimitSec, value::Real)
     end
     return
 end
+
 function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, ::Nothing)
-    # removing the tie limit -> set the time limit to CONOPT's default
+    # removing the time limit -> set the time limit to CONOPT's default
     if 1e+06 == model.timelimit
         return
     end
@@ -91,8 +108,61 @@ function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, ::Nothing)
     end
     return
 end
+
 MOI.get(model::Optimizer, ::MOI.TimeLimitSec) = model.timelimit
 
+# objective and solution limits - currently no way to set these in CONOPT
+MOI.supports(::Optimizer, ::MOI.ObjectiveLimit) = false
+MOI.supports(::Optimizer, ::MOI.SolutionLimit) = false
+
+# node limit - CONOPT isn't a branch and bound solver, so this makes no sense
+MOI.supports(::Optimizer, ::MOI.NodeLimit) = false
+
+# solver attributes
+MOI.supports(::Optimizer, ::MOI.RawOptimizerAttribute) = true
+
+function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
+    return MOI.set(model, param, string(value))
+end
+
+function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value::String)
+    model.params[param.name] = value
+    # TODO the actual setting of parameters will happen in the Option callback
+    return
+end
+
+function MOI.get(model::Optimizer, param::MOI.RawOptimizerAttribute)
+    # TODO handle non-existing parameters
+    return model.params[param.name]
+end
+
+# number of threads
+
+MOI.supports(::Optimizer, ::MOI.NumberOfThreads) = true
+
+function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, value::Integer)
+    coierror = LibConopt.COIDEF_ThreadS(cntvect, value);
+    if coierror != 0
+        error("could not set CONOPT number of threads")
+    end
+    threads = value
+    return
+end
+
+function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, ::Nothing)
+    coierror = LibConopt.COIDEF_ThreadS(cntvect, 0);
+    if coierror != 0
+        error("could not reset CONOPT number of threads")
+    end
+    threads = 0
+    return
+end
+
+MOI.get(model::Optimizer, ::MOI.NumberOfThreads) = model.threads
+
+# gap tolerances not supported by CONOPT
+MOI.supports(::Optimizer, ::MOI.AbsoluteGapTolerance) = false
+MOI.supports(::Optimizer, ::MOI.RelativeGapTolerance) = false
 
 
 ###
