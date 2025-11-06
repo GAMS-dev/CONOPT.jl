@@ -9,13 +9,22 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     name::String                # name of the model
     params::Dict{String,String} # solver parameters
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
+    variables::MOI.Utilities.VariablesContainer{Float64} # problem variables
     function Optimizer()
         cntvect = Ptr{Cvoid}()
         coierror = LibConopt.COI_Create(Ref{Ptr{Cvoid}}(cntvect))
         if coierror != 0
             error("could not create a CONOPT control vector")
         end
-        model = new(cntvect, false, 1e+06)
+        model = new(
+            cntvect, # CONOPT control vector
+            false,                 # silent
+            1e+06,                 # time limit
+            "Model",               # model name
+            Dict{String,String}(), # parameters
+            0,                     # threads
+            MOI.Utilities.VariablesContainer{Float64}()
+        )
         finalizer(LibConopt.COI_Free, Ref{Ptr{Cvoid}}(model.cntvect))
         return model
     end
@@ -40,11 +49,14 @@ end
 
 function MOI.is_empty(model::Optimizer)
     # TODO actually check if the model is empty
-    return true
+    return is_empty(model.params) &&
+           MOI.is_empty(model.variables)
 end
 
 function MOI.empty!(model::Optimizer)
     # empty the model (TODO: does this also need to free the C problem?)
+    empty!(model.parameters)
+    MOI.empty!(model.variables)
     return
 end
 
