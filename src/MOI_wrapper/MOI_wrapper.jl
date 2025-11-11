@@ -3,16 +3,22 @@
 ###
 
 mutable struct Optimizer <: MOI.AbstractOptimizer
-    cntvect::Ptr{Cvoid}         # pointer to the CONOPT control vector
+    cntvect::Ref{Ptr{Cvoid}}    # pointer to the CONOPT control vector
     silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
     timelimit::Real             # time limit in seconds
     name::String                # name of the model
     params::Dict{String,String} # solver parameters
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
     variables::MOI.Utilities.VariablesContainer{Float64} # problem variables
+    
+    # solution information
+    rawstatus::String           # string explaining why the solver stopped
+    solvetime::Float64          # solving time in seconds
+    
+    # constructor
     function Optimizer()
-        cntvect = Ptr{Cvoid}()
-        coierror = LibConopt.COI_Create(Ref{Ptr{Cvoid}}(cntvect))
+        cntvect = Ref{Ptr{Cvoid}}()
+        coierror = LibConopt.COI_Create(cntvect)
         if coierror != 0
             error("could not create a CONOPT control vector")
         end
@@ -23,9 +29,11 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             "Model",               # model name
             Dict{String,String}(), # parameters
             0,                     # threads
-            MOI.Utilities.VariablesContainer{Float64}()
+            MOI.Utilities.VariablesContainer{Float64}(), # variables
+            "unknown",             # rawstatus
+            0                      # solving time
         )
-        finalizer(LibConopt.COI_Free, Ref{Ptr{Cvoid}}(model.cntvect))
+        finalizer(LibConopt.COI_Free, model.cntvect)
         return model
     end
 end
@@ -49,14 +57,22 @@ end
 
 function MOI.is_empty(model::Optimizer)
     # TODO actually check if the model is empty
-    return is_empty(model.params) &&
+    return isempty(model.params) &&
            MOI.is_empty(model.variables)
 end
 
 function MOI.empty!(model::Optimizer)
     # empty the model (TODO: does this also need to free the C problem?)
-    empty!(model.parameters)
+    empty!(model.params)
     MOI.empty!(model.variables)
+    coierror = LibConopt.COI_Free(model.cntvect)
+    if coierror != 0
+        error("could not free a CONOPT control vector")
+    end
+    coierror = LibConopt.COI_Create(model.cntvect)
+    if coierror != 0
+        error("could not create a CONOPT control vector")
+    end
     return
 end
 
@@ -76,19 +92,16 @@ function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
     major = Ref{Cint}(0)
     minor = Ref{Cint}(0)
     patch = Ref{Cint}(0)
-    coierror = LibConopt.COIGET_Version(major, minor, patch)
-    if coierror != 0
-        error("could not get CONOPT version")
-    end
+    LibConopt.COIGET_Version(major, minor, patch)
     return string(major[], ".", minor[], ".", patch[])
 end
 
 # raw solver
-MOI.get(::Optimizer, ::MOI.RawSolver) = model.cntvect
+MOI.get(model::Optimizer, ::MOI.RawSolver) = model.cntvect
 
 # model name
-MOI.get(::Optimizer, ::MOI.Name) = model.name
-function MOI.set(::Optimizer, ::MOI.Name, value::String)
+MOI.get(model::Optimizer, ::MOI.Name) = model.name
+function MOI.set(model::Optimizer, ::MOI.Name, value::String)
     if value == model.name
         return
     end
@@ -111,12 +124,12 @@ MOI.get(model::Optimizer, ::MOI.Silent) = model.silent
 # time limit
 MOI.supports(::Optimizer, ::MOI.TimeLimitSec) = true
 
-function MOI.set(::Optimizer, ::MOI.TimeLimitSec, value::Real)
+function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, value::Real)
     if value == model.timelimit
         return
     end
     model.timelimit = value
-    coierror += LibConopt.COIDEF_ResLim(model.cntvect, value);
+    coierror = LibConopt.COIDEF_ResLim(model.cntvect[], value);
     if coierror != 0
         error("could not set CONOPT time limit")
     end
@@ -129,7 +142,7 @@ function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, ::Nothing)
         return
     end
     model.timelimit = 1e+06
-    coierror += LibConopt.COIDEF_ResLim(model.cntvect, 1e+06);
+    coierror = LibConopt.COIDEF_ResLim(model.cntvect[], 1e+06);
     if coierror != 0
         error("could not reset CONOPT time limit")
     end
@@ -168,28 +181,36 @@ end
 MOI.supports(::Optimizer, ::MOI.NumberOfThreads) = true
 
 function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, value::Integer)
-    coierror = LibConopt.COIDEF_ThreadS(model.cntvect, value);
+    coierror = LibConopt.COIDEF_ThreadS(model.cntvect[], value);
     if coierror != 0
         error("could not set CONOPT number of threads")
     end
-    threads = value
+    model.threads = value
     return
 end
 
 function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, ::Nothing)
-    coierror = LibConopt.COIDEF_ThreadS(model.cntvect, 0);
+    coierror = LibConopt.COIDEF_ThreadS(model.cntvect[], 0);
     if coierror != 0
         error("could not reset CONOPT number of threads")
     end
-    threads = 0
+    model.threads = 0
     return
 end
+
+MOI.get(model::Optimizer, ::MOI.NumberOfThreads) = model.threads
 
 MOI.get(model::Optimizer, ::MOI.NumberOfThreads) = model.threads
 
 # gap tolerances not supported by CONOPT
 MOI.supports(::Optimizer, ::MOI.AbsoluteGapTolerance) = false
 MOI.supports(::Optimizer, ::MOI.RelativeGapTolerance) = false
+
+# raw status string explaining why the solver stopped
+MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.rawstatus
+
+# solving time in seconds
+MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solvetime
 
 
 
@@ -229,16 +250,28 @@ end
 
 MOI.supports_incremental_interface(::Optimizer) = false
 
-function MOI.copy_to(model::Optimizer, src::MOI.ModelLike)
-    return MOI.Utilities.default_copy_to(model, src)
-end
+# TODO probably remove this
+#function MOI.copy_to(model::Optimizer, src::MOI.ModelLike)
+#    return MOI.Utilities.default_copy_to(model, src)
+#end
 
 # setup the model
 function setup_model(model::Optimizer)
 # TODO fill this in
 end
 
-
+# this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
+function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
+    println("optimize! call for moving stuff")
+    #MOI.empty!(dest)
+    #index_map = MOI.Utilities.identity_index_map(src) # this just maps variable indices to themselves
+    index_map = MOI.IndexMap()
+    
+    
+    
+  
+    return index_map, false
+end
 
 ###
 ### Optimize and post-optimize functions
@@ -246,7 +279,7 @@ end
 
 function MOI.optimize!(model::Optimizer)
     setup_model(model)
-    result = LibConopt.COI_Solve(model.cntvect)
+    result = LibConopt.COI_Solve(model.cntvect[])
     #t = time()
     #model.variable_primal = nothing
     #model.constraint_primal = nothing
