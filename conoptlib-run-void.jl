@@ -4,7 +4,7 @@ using .LibConopt
 cntvect = Ref{Ptr{Cvoid}}()
 
 create_return = LibConopt.COI_Create(cntvect)
-println("Create returned ", create_return)
+println("Create returned ", create_return, " cntvect is ", cntvect)
 
 major = Ref{Cint}(0)
 minor = Ref{Cint}(7)
