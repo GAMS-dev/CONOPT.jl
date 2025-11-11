@@ -43,7 +43,6 @@ function runtests()
     end
 end
 
-#=
 """
     test_runtests()
 
@@ -63,10 +62,10 @@ function test_runtests()
         # behind the current MOI release though. You should periodically check
         # for new tests to fix bugs and implement new features.
         #exclude_tests_after = v"0.10.5",
+        verbose = true
     )
     return
 end
-=#
 
 """
     test_SolverName()
