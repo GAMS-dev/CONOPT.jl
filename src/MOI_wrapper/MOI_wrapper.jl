@@ -11,6 +11,10 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
     variables::MOI.Utilities.VariablesContainer{Float64} # problem variables
     
+    # NLP data
+    nlp_model::Union{Nothing,MOI.Nonlinear.Model} # specialised NLP model structure
+    nlp_data::MOI.NLPBlockData  # NLP data structure to make use of MOI's evaluation functionality
+    
     # solution information
     rawstatus::String           # string explaining why the solver stopped
     solvetime::Float64          # solving time in seconds
@@ -28,8 +32,10 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             1e+06,                 # time limit
             "Model",               # model name
             Dict{String,String}(), # parameters
-            0,                     # threads
+            0,                     # default number of threads
             MOI.Utilities.VariablesContainer{Float64}(), # variables
+            MOI.Nonlinear.Model(), # NLP model
+            MOI.NLPBlockData([], _EmptyNLPEvaluator(), false), # empty block data
             "unknown",             # rawstatus
             0                      # solving time
         )
@@ -177,7 +183,6 @@ function MOI.get(model::Optimizer, param::MOI.RawOptimizerAttribute)
 end
 
 # number of threads
-
 MOI.supports(::Optimizer, ::MOI.NumberOfThreads) = true
 
 function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, value::Integer)
@@ -205,6 +210,13 @@ MOI.get(model::Optimizer, ::MOI.NumberOfThreads) = model.threads
 # gap tolerances not supported by CONOPT
 MOI.supports(::Optimizer, ::MOI.AbsoluteGapTolerance) = false
 MOI.supports(::Optimizer, ::MOI.RelativeGapTolerance) = false
+
+# solve status
+
+function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
+    # TODO return actual status
+    return MOI.OPTIMIZE_NOT_CALLED
+end
 
 # raw status string explaining why the solver stopped
 MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.rawstatus
@@ -242,6 +254,18 @@ function MOI.supports_constraint(
     return true
 end
 
+function MOI.supports(
+    ::Optimizer,
+    ::Union{
+        MOI.ObjectiveSense,
+        MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}},
+        MOI.ObjectiveFunction{MOI.ScalarQuadraticFunction{Float64}},
+        MOI.ObjectiveFunction{MOI.ScalarNonlinearFunction},
+    },
+)
+    return true
+end
+
 
 
 ###
@@ -257,19 +281,39 @@ MOI.supports_incremental_interface(::Optimizer) = false
 
 # setup the model
 function setup_model(model::Optimizer)
-# TODO fill this in
+# TODO fill this in: create NLPBlockData
+    model.nlp_data = MOI.NLPBlockData(MOI.Nonlinear.Evaluator(model.nlp_model, model.ad_backend, vars),) # TODO need to define vars
 end
 
 # this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
 function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
+    # TODO: what we need to get here: matrix of affine terms, obj and conss functions to evaluate, numbers of variables, nonzeroes, etc., Jacobian and Hessian structure, first and second derivative evaluations
+    
     println("optimize! call for moving stuff")
     #MOI.empty!(dest)
-    #index_map = MOI.Utilities.identity_index_map(src) # this just maps variable indices to themselves
-    index_map = MOI.IndexMap()
+    index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
+    show(src)
+    println("\nmodel: ")
+    show(src.model)
+    println("\nconstraints: ")
+    conss = src.constraints
+    show(conss)
     
+    obj_attr = nothing
+    for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
+        if attr isa MOI.ObjectiveFunction
+            obj_attr = attr
+        end
+    end
+    obj = MOI.get(src, obj_attr)
+    println("\nobjective: ")
+    show(obj)
     
-    
+    for term in obj.terms
+        println("\nvalue = ", term.variable.value, " coef = ", term.coefficient)
+    end
   
+    error("For now just terminating here")
     return index_map, false
 end
 
