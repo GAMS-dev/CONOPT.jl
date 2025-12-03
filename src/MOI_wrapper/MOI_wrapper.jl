@@ -10,10 +10,14 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     params::Dict{String,String} # solver parameters
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
     variables::MOI.Utilities.VariablesContainer{Float64} # problem variables
+    variable_indices::Vector{MOI.VariableIndex} # list of variable indices
+    num_variables::Int          # number of variables
+    num_constraints::Int        # number of constraints
     
     # NLP data
     nlp_model::Union{Nothing,MOI.Nonlinear.Model} # specialised NLP model structure
     nlp_data::MOI.NLPBlockData  # NLP data structure to make use of MOI's evaluation functionality
+    ad_backend::MOI.Nonlinear.AbstractAutomaticDifferentiation # automatic differentiation backend
     
     # solution information
     rawstatus::String           # string explaining why the solver stopped
@@ -34,8 +38,14 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             Dict{String,String}(), # parameters
             0,                     # default number of threads
             MOI.Utilities.VariablesContainer{Float64}(), # variables
+            MOI.VariableIndex[],   # list of variable indices
+            0,                     # number of variables
+            0,                     # number of constraints
+            
             MOI.Nonlinear.Model(), # NLP model
             MOI.NLPBlockData([], _EmptyNLPEvaluator(), false), # empty block data
+            MOI.Nonlinear.SparseReverseMode(), # automatic differentiation
+
             "unknown",             # rawstatus
             0                      # solving time
         )
@@ -49,6 +59,13 @@ const _SETS = Union{
     MOI.LessThan{Float64},
     MOI.EqualTo{Float64},
     MOI.Interval{Float64},
+}
+
+const _FUNCTIONS = Union{
+    MOI.VariableIndex,
+    MOI.ScalarAffineFunction{Float64},
+    MOI.ScalarQuadraticFunction{Float64},
+    MOI.ScalarNonlinearFunction,
 }
 
 
@@ -241,14 +258,7 @@ end
 
 function MOI.supports_constraint(
     ::Optimizer,
-    ::Type{
-        <:Union{
-            MOI.VariableIndex,
-            MOI.ScalarAffineFunction{Float64},
-            MOI.ScalarQuadraticFunction{Float64},
-            MOI.ScalarNonlinearFunction,
-        },
-    },
+    ::Type{<:_FUNCTIONS,},
     ::Type{<:_SETS},
 )
     return true
@@ -269,6 +279,21 @@ end
 
 
 ###
+### _EmptyNLPEvaluator
+###
+struct _EmptyNLPEvaluator <: MOI.AbstractNLPEvaluator end
+
+MOI.features_available(::_EmptyNLPEvaluator) = [:Grad, :Jac, :Hess]
+MOI.initialize(::_EmptyNLPEvaluator, ::Any) = nothing
+MOI.eval_constraint(::_EmptyNLPEvaluator, g, x) = nothing
+MOI.jacobian_structure(::_EmptyNLPEvaluator) = Tuple{Int64,Int64}[]
+MOI.hessian_lagrangian_structure(::_EmptyNLPEvaluator) = Tuple{Int64,Int64}[]
+MOI.eval_constraint_jacobian(::_EmptyNLPEvaluator, J, x) = nothing
+MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
+
+
+
+###
 ### Setting up the model
 ###
 
@@ -280,9 +305,51 @@ MOI.supports_incremental_interface(::Optimizer) = false
 #end
 
 # setup the model
-function setup_model(model::Optimizer)
-# TODO fill this in: create NLPBlockData
-    model.nlp_data = MOI.NLPBlockData(MOI.Nonlinear.Evaluator(model.nlp_model, model.ad_backend, vars),) # TODO need to define vars
+function setup_model(dest::Optimizer, src::MOI.ModelLike)
+    # Variables
+    dest.num_variables = MOI.get(src, MOI.NumberOfVariables())
+    dest.variable_indices = MOI.get(src, MOI.ListOfVariableIndices())
+    
+    # Constraints of type f is set
+    num_conss = 0
+    for f in Base.uniontypes(_FUNCTIONS)
+        for set in Base.uniontypes(_SETS)
+            num_conss += MOI.get(src, MOI.NumberOfConstraints{f, set}())
+            #conss = constraints(src, f, set)
+            #show(conss)
+        end
+    end
+    num_conss += MOI.get(src, MOI.NumberOfConstraints{MOI.VectorOfVariables, MOI.VectorNonlinearOracle{Float64}}())
+    println("\nnumber of constraints is ", num_conss)
+
+    # Add constraints to NLP model
+    for (F, S) in MOI.get(src, MOI.ListOfConstraintTypesPresent())
+        conss_indices = MOI.get(src, MOI.ListOfConstraintIndices{F,S}())
+        println("\nconss indices: ")
+        show(conss_indices)
+        for index in conss_indices
+           println("\ncons function: ")
+           cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
+           show(cons_function)
+           println("\ncons set: ")
+           cons_set = MOI.get(src, MOI.ConstraintSet(), index)
+           show(cons_set)
+           MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
+        end
+    end
+    
+    #index = MOI.Nonlinear.add_constraint(model.nlp_model, f, s)
+    
+    # NLP evaluation data
+    dest.nlp_data = MOI.NLPBlockData(MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices),)
+    println("\nnlp_data:\n")
+    show(dest.nlp_data)
+    
+    error("For now just terminating here")
+    
+    jacobian_sparsity = MOI.jacobian_structure(src)
+    println("\nJacobian:\n")
+    show(jacobian_sparsity)
 end
 
 # this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
@@ -292,13 +359,11 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     println("optimize! call for moving stuff")
     #MOI.empty!(dest)
     index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
+    
+    
     show(src)
     println("\nmodel: ")
     show(src.model)
-    println("\nconstraints: ")
-    conss = src.constraints
-    show(conss)
-    
     obj_attr = nothing
     for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
         if attr isa MOI.ObjectiveFunction
@@ -308,12 +373,14 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     obj = MOI.get(src, obj_attr)
     println("\nobjective: ")
     show(obj)
-    
     for term in obj.terms
         println("\nvalue = ", term.variable.value, " coef = ", term.coefficient)
     end
-  
-    error("For now just terminating here")
+    
+    setup_model(dest, src)
+    
+    result = LibConopt.COI_Solve(model.cntvect[])
+    
     return index_map, false
 end
 
@@ -323,7 +390,6 @@ end
 
 function MOI.optimize!(model::Optimizer)
     setup_model(model)
-    result = LibConopt.COI_Solve(model.cntvect[])
     #t = time()
     #model.variable_primal = nothing
     #model.constraint_primal = nothing
