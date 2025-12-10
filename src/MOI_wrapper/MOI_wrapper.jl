@@ -9,10 +9,12 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     name::String                # name of the model
     params::Dict{String,String} # solver parameters
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
-    variables::MOI.Utilities.VariablesContainer{Float64} # problem variables
     variable_indices::Vector{MOI.VariableIndex} # list of variable indices
-    num_variables::Int          # number of variables
     num_constraints::Int        # number of constraints
+    num_ranged::Int             # number of ranged constraints
+    jacobian_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column)
+    jacobian_nonlinear_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column), only nonlinear terms
+    hessian_structure::Vector{Tuple{Int,Int}} # Hessian Lagrangian sparsity structure as a vector of tuples (row,column)
     
     # NLP data
     nlp_model::Union{Nothing,MOI.Nonlinear.Model} # specialised NLP model structure
@@ -37,10 +39,12 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             "Model",               # model name
             Dict{String,String}(), # parameters
             0,                     # default number of threads
-            MOI.Utilities.VariablesContainer{Float64}(), # variables
             MOI.VariableIndex[],   # list of variable indices
-            0,                     # number of variables
             0,                     # number of constraints
+            0,                     # number of ranged constraints
+            Tuple{Int,Int}[],      # Jacobian sparsity structure
+            Tuple{Int,Int}[],      # Jacobian nonlinear sparsity structure
+            Tuple{Int,Int}[],      # Hessian sparsity structure
             
             MOI.Nonlinear.Model(), # NLP model
             MOI.NLPBlockData([], _EmptyNLPEvaluator(), false), # empty block data
@@ -80,14 +84,12 @@ end
 
 function MOI.is_empty(model::Optimizer)
     # TODO actually check if the model is empty
-    return isempty(model.params) &&
-           MOI.is_empty(model.variables)
+    return isempty(model.params)
 end
 
 function MOI.empty!(model::Optimizer)
     # empty the model (TODO: does this also need to free the C problem?)
     empty!(model.params)
-    MOI.empty!(model.variables)
     coierror = LibConopt.COI_Free(model.cntvect)
     if coierror != 0
         error("could not free a CONOPT control vector")
@@ -247,14 +249,15 @@ MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solvetime
 ### indicate which constraints CONOPT supports
 ###
 
+# TODO implement support for these
 # support constraints of the form x in S, where S = {x | l <= f(x) <= u}
-function MOI.supports_constraint(
-    ::Optimizer,
-    ::Type{MOI.VectorOfVariables},
-    ::Type{MOI.VectorNonlinearOracle{Float64}},
-)
-    return true
-end
+#function MOI.supports_constraint(
+#    ::Optimizer,
+#    ::Type{MOI.VectorOfVariables},
+#    ::Type{MOI.VectorNonlinearOracle{Float64}},
+#)
+#    return true
+#end
 
 function MOI.supports_constraint(
     ::Optimizer,
@@ -299,57 +302,122 @@ MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
 
 MOI.supports_incremental_interface(::Optimizer) = false
 
-# TODO probably remove this
-#function MOI.copy_to(model::Optimizer, src::MOI.ModelLike)
-#    return MOI.Utilities.default_copy_to(model, src)
-#end
+# add nonlinear Jacobian entries from a given function
+function add_nonlinear_jacobian_entries(model::Optimizer, f::MOI.ScalarQuadraticFunction{Float64})
+    
+end
 
 # setup the model
 function setup_model(dest::Optimizer, src::MOI.ModelLike)
     # Variables
-    dest.num_variables = MOI.get(src, MOI.NumberOfVariables())
     dest.variable_indices = MOI.get(src, MOI.ListOfVariableIndices())
     
-    # Constraints of type f is set
-    num_conss = 0
+    #MOI.VariableIndex,
+    #MOI.ScalarAffineFunction{Float64},
+    #MOI.ScalarQuadraticFunction{Float64},
+    #MOI.ScalarNonlinearFunction,
+    #push!(dest.jacobian_nonlinear_structure, (element))
+    
+    # Constraints of type (f in set); count and add to NLP model
     for f in Base.uniontypes(_FUNCTIONS)
         for set in Base.uniontypes(_SETS)
-            num_conss += MOI.get(src, MOI.NumberOfConstraints{f, set}())
-            #conss = constraints(src, f, set)
-            #show(conss)
+            nconss = MOI.get(src, MOI.NumberOfConstraints{f, set}())
+            if set == MOI.Interval{Float64}
+                dest.num_ranged += nconss
+            end
+            dest.num_constraints += nconss
+            conss_indices = MOI.get(src, MOI.ListOfConstraintIndices{f,set}())
+            for index in conss_indices
+                cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
+                cons_set = MOI.get(src, MOI.ConstraintSet(), index)
+                MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
+            end
+            
+            # note the nonlinear terms
+            # TODO decide whether to keep this or do this another way
+            if f == MOI.ScalarQuadraticFunction{Float64}
+                for index in conss_indices
+                    cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
+                end
+            end
+            if f == MOI.ScalarNonlinearFunction
+                for index in conss_indices
+                    cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
+                    add_nonlinear_jacobian_entries(model, cons_function)
+                end
+            end
         end
     end
-    num_conss += MOI.get(src, MOI.NumberOfConstraints{MOI.VectorOfVariables, MOI.VectorNonlinearOracle{Float64}}())
-    println("\nnumber of constraints is ", num_conss)
-
-    # Add constraints to NLP model
-    for (F, S) in MOI.get(src, MOI.ListOfConstraintTypesPresent())
-        conss_indices = MOI.get(src, MOI.ListOfConstraintIndices{F,S}())
-        println("\nconss indices: ")
-        show(conss_indices)
-        for index in conss_indices
-           println("\ncons function: ")
-           cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
-           show(cons_function)
-           println("\ncons set: ")
-           cons_set = MOI.get(src, MOI.ConstraintSet(), index)
-           show(cons_set)
-           MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
-        end
-    end
+    #dest.num_constraints += MOI.get(src, MOI.NumberOfConstraints{MOI.VectorOfVariables, MOI.VectorNonlinearOracle{Float64}}()) # TODO implement support for these
+    println("\nnumber of constraints is ", dest.num_constraints)
     
-    #index = MOI.Nonlinear.add_constraint(model.nlp_model, f, s)
+    # Add objective to NLP model (as constraint, since this is what CONOPT expects)
+    obj_attr = nothing
+    for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
+        if attr isa MOI.ObjectiveFunction
+            obj_attr = attr
+        end
+    end
+    obj = MOI.get(src, obj_attr)
+    #MOI.Nonlinear.set_objective(dest.nlp_model, obj)
+    print("\nobj is ", obj)
+    MOI.Nonlinear.add_constraint(dest.nlp_model, obj, MOI.Interval(-Inf, Inf))
+    
+    println("\nNLP model: ")
+    show(dest.nlp_model)
+    
+    println("\nNLP model constraints count: ")
+    show(length(dest.nlp_model.constraints))
     
     # NLP evaluation data
     dest.nlp_data = MOI.NLPBlockData(MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices),)
     println("\nnlp_data:\n")
     show(dest.nlp_data)
     
-    error("For now just terminating here")
+    # initialise the evaluator before we can use it
+    MOI.initialize(dest.nlp_data.evaluator, [:Grad, :Jac, :JacVec, :Hess, :ExprGraph])
     
-    jacobian_sparsity = MOI.jacobian_structure(src)
-    println("\nJacobian:\n")
-    show(jacobian_sparsity)
+    # Get Jacobian sparsity structure as a vector of tuples (row, column)
+    dest.jacobian_structure = MOI.jacobian_structure(dest.nlp_data.evaluator)
+    
+    # TODO do this only for nonlinear constraints
+    jacobian_nonlinear_structure = Tuple{Int64,Int64}[]
+    for (index, constraint) in dest.nlp_model.constraints
+        nnz = Set()
+        
+        # get hessian of this constraint as (col1, col2)
+        hessian_structure_i = MOI.hessian_constraint_structure(dest.nlp_data.evaluator, MOI.Nonlinear.ordinal_index(dest.nlp_data.evaluator, index))
+        
+        # add each col to nnz
+        for (col1, col2) in hessian_structure_i
+            push!(nnz, col1)
+            push!(nnz, col2)
+        end
+        
+        println("\nconstraint ", index, " has nonlinear gradient entries: ")
+        show(nnz)
+        println("\n and looks like: ")
+        print(constraint)
+    end
+    
+    # Get Hessian sparsity structure as a vector of tuples (row, column)
+    dest.hessian_structure = MOI.hessian_lagrangian_structure(dest.nlp_data.evaluator)
+end
+
+function setup_inner(model::Optimizer)
+    # TODO check if we need to recreate everything
+    
+    result = 0
+    
+    # set problem sizes
+    result += LibConopt.COIDEF_NumVar(model.cntvect[], length(model.variable_indices))
+    result += LibConopt.COIDEF_NumCon(model.cntvect[], model.num_constraints + 1) # objective counts as another constraint here
+    
+    # Jacobian nonzeroes: each slack var created for a ranged row adds a Jacobian nnz; objective also counts as constraint and is already included in jacobian_structure
+    result += LibConopt.COIDEF_NumNz(model.cntvect[], length(model.jacobian_structure) + model.num_ranged)
+    
+    # nonlinear Jacobian nonzeroes: they include those of constraints and objective
+    result += COIDEF_NumNlNz(model.cntvect[], nnlnz + nobjgradnls) # TODO count the nonlinear nonzeroes
 end
 
 # this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
@@ -360,24 +428,14 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     #MOI.empty!(dest)
     index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
     
-    
     show(src)
     println("\nmodel: ")
     show(src.model)
-    obj_attr = nothing
-    for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
-        if attr isa MOI.ObjectiveFunction
-            obj_attr = attr
-        end
-    end
-    obj = MOI.get(src, obj_attr)
-    println("\nobjective: ")
-    show(obj)
-    for term in obj.terms
-        println("\nvalue = ", term.variable.value, " coef = ", term.coefficient)
-    end
     
     setup_model(dest, src)
+    setup_inner(dest)
+    
+    error("stopping for now")
     
     result = LibConopt.COI_Solve(model.cntvect[])
     
