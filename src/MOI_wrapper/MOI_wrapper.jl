@@ -302,22 +302,11 @@ MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
 
 MOI.supports_incremental_interface(::Optimizer) = false
 
-# add nonlinear Jacobian entries from a given function
-function add_nonlinear_jacobian_entries(model::Optimizer, f::MOI.ScalarQuadraticFunction{Float64})
-    
-end
-
 # setup the model
 function setup_model(dest::Optimizer, src::MOI.ModelLike)
     # Variables
     dest.variable_indices = MOI.get(src, MOI.ListOfVariableIndices())
-    
-    #MOI.VariableIndex,
-    #MOI.ScalarAffineFunction{Float64},
-    #MOI.ScalarQuadraticFunction{Float64},
-    #MOI.ScalarNonlinearFunction,
-    #push!(dest.jacobian_nonlinear_structure, (element))
-    
+
     # Constraints of type (f in set); count and add to NLP model
     for f in Base.uniontypes(_FUNCTIONS)
         for set in Base.uniontypes(_SETS)
@@ -331,20 +320,6 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
                 cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
                 cons_set = MOI.get(src, MOI.ConstraintSet(), index)
                 MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
-            end
-            
-            # note the nonlinear terms
-            # TODO decide whether to keep this or do this another way
-            if f == MOI.ScalarQuadraticFunction{Float64}
-                for index in conss_indices
-                    cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
-                end
-            end
-            if f == MOI.ScalarNonlinearFunction
-                for index in conss_indices
-                    cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
-                    add_nonlinear_jacobian_entries(model, cons_function)
-                end
             end
         end
     end
@@ -360,7 +335,6 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     end
     obj = MOI.get(src, obj_attr)
     #MOI.Nonlinear.set_objective(dest.nlp_model, obj)
-    print("\nobj is ", obj)
     MOI.Nonlinear.add_constraint(dest.nlp_model, obj, MOI.Interval(-Inf, Inf))
     
     println("\nNLP model: ")
@@ -377,16 +351,17 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     # initialise the evaluator before we can use it
     MOI.initialize(dest.nlp_data.evaluator, [:Grad, :Jac, :JacVec, :Hess, :ExprGraph])
     
-    # Get Jacobian sparsity structure as a vector of tuples (row, column)
+    # get Jacobian sparsity structure as a vector of tuples (row, column)
     dest.jacobian_structure = MOI.jacobian_structure(dest.nlp_data.evaluator)
     
-    # TODO do this only for nonlinear constraints
-    jacobian_nonlinear_structure = Tuple{Int64,Int64}[]
+    # get nonlinear Jacobian entries: use Hessian for this, if, for a given constraint, a variable has at
+    # least one Hessian nonzero corresponding to it, then this constraint is nonlinear in this variable
     for (index, constraint) in dest.nlp_model.constraints
         nnz = Set()
+        row = MOI.Nonlinear.ordinal_index(dest.nlp_data.evaluator, index)
         
-        # get hessian of this constraint as (col1, col2)
-        hessian_structure_i = MOI.hessian_constraint_structure(dest.nlp_data.evaluator, MOI.Nonlinear.ordinal_index(dest.nlp_data.evaluator, index))
+        # get Hessian structure of this constraint as (col1, col2)
+        hessian_structure_i = MOI.hessian_constraint_structure(dest.nlp_data.evaluator, row)
         
         # add each col to nnz
         for (col1, col2) in hessian_structure_i
@@ -394,10 +369,10 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
             push!(nnz, col2)
         end
         
-        println("\nconstraint ", index, " has nonlinear gradient entries: ")
-        show(nnz)
-        println("\n and looks like: ")
-        print(constraint)
+        # add all the nonzeroes in the form (row, col) to the vector of nonlinear jacobian entries
+        for col in nnz
+            push!(dest.jacobian_nonlinear_structure, (row, col))
+        end
     end
     
     # Get Hessian sparsity structure as a vector of tuples (row, column)
@@ -413,11 +388,12 @@ function setup_inner(model::Optimizer)
     result += LibConopt.COIDEF_NumVar(model.cntvect[], length(model.variable_indices))
     result += LibConopt.COIDEF_NumCon(model.cntvect[], model.num_constraints + 1) # objective counts as another constraint here
     
-    # Jacobian nonzeroes: each slack var created for a ranged row adds a Jacobian nnz; objective also counts as constraint and is already included in jacobian_structure
+    # Jacobian nonzeroes: each slack var created for a ranged row adds a Jacobian nnz;
+    # objective also counts as constraint and is already included in jacobian_structure
     result += LibConopt.COIDEF_NumNz(model.cntvect[], length(model.jacobian_structure) + model.num_ranged)
     
-    # nonlinear Jacobian nonzeroes: they include those of constraints and objective
-    result += COIDEF_NumNlNz(model.cntvect[], nnlnz + nobjgradnls) # TODO count the nonlinear nonzeroes
+    # nonlinear Jacobian nonzeroes: both of constraints and objective (nlp_model already accounts for it)
+    result += LibConopt.COIDEF_NumNlNz(model.cntvect[], length(model.jacobian_nonlinear_structure))
 end
 
 # this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
