@@ -15,6 +15,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     jacobian_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column)
     jacobian_nonlinear_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column), only nonlinear terms
     hessian_structure::Vector{Tuple{Int,Int}} # Hessian Lagrangian sparsity structure as a vector of tuples (row,column)
+    sense::MOI.OptimizationSense # objective sense
     
     # NLP data
     nlp_model::Union{Nothing,MOI.Nonlinear.Model} # specialised NLP model structure
@@ -45,6 +46,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             Tuple{Int,Int}[],      # Jacobian sparsity structure
             Tuple{Int,Int}[],      # Jacobian nonlinear sparsity structure
             Tuple{Int,Int}[],      # Hessian sparsity structure
+            MOI.FEASIBILITY_SENSE, # objective sense
             
             MOI.Nonlinear.Model(), # NLP model
             MOI.NLPBlockData([], _EmptyNLPEvaluator(), false), # empty block data
@@ -375,25 +377,61 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
         end
     end
     
-    # Get Hessian sparsity structure as a vector of tuples (row, column)
+    # get sparsity structure of the Hessian of the Lagrangian as a vector of tuples (row, column)
     dest.hessian_structure = MOI.hessian_lagrangian_structure(dest.nlp_data.evaluator)
+    
+    # get objective sense
+    dest.sense = MOI.get(src, MOI.ObjectiveSense())
+end
+
+function setup_message(model::Optimizer)
+    # define the message callback
+    function Message(smsg, dmsg, nmsg, msgv, usrmem)::Cint
+        msg = unsafe_wrap(Vector{Cstring}, msgv, smsg; own = false)
+        for i = 1:smsg
+            println("message: ", unsafe_string(pointer(msg[i])))
+        end
+        return 0
+    end
+
+    Message_c = @cfunction($Message, Cint, (Cint, Cint, Cint, Ptr{Cstring}, Ptr{Cvoid}))
+    LibConopt.COIDEF_Message(model.cntvect[], Message_c)
 end
 
 function setup_inner(model::Optimizer)
     # TODO check if we need to recreate everything
-    
+
     result = 0
-    
+
     # set problem sizes
     result += LibConopt.COIDEF_NumVar(model.cntvect[], length(model.variable_indices))
     result += LibConopt.COIDEF_NumCon(model.cntvect[], model.num_constraints + 1) # objective counts as another constraint here
-    
-    # Jacobian nonzeroes: each slack var created for a ranged row adds a Jacobian nnz;
+
+    # number of Jacobian nonzeroes: each slack var created for a ranged row adds a Jacobian nnz;
     # objective also counts as constraint and is already included in jacobian_structure
     result += LibConopt.COIDEF_NumNz(model.cntvect[], length(model.jacobian_structure) + model.num_ranged)
-    
-    # nonlinear Jacobian nonzeroes: both of constraints and objective (nlp_model already accounts for it)
+
+    # number of nonlinear Jacobian nonzeroes: both of constraints and objective (nlp_model already accounts for it)
     result += LibConopt.COIDEF_NumNlNz(model.cntvect[], length(model.jacobian_nonlinear_structure))
+
+    # number of entries in the Hessian of the Lagrangian
+    result += LibConopt.COIDEF_NumHess(model.cntvect[], length(model.hessian_structure))
+    
+    # objective information
+    result += LibConopt.COIDEF_OptDir(model.cntvect[], model.sense == MOI.MAX_SENSE ? 1 : -1)
+    # in model.nlp_model, we store objective as a constraint, hence use ObjCon (not ObjVar) here;
+    # we add objective as the last constraint, hence set it to position of the last constraint
+    result += LibConopt.COIDEF_ObjCon(model.cntvect[], length(model.nlp_model.constraints))
+    
+    # tell CONOPT that our function evaluations include the linear terms
+    result += LibConopt.COIDEF_FVincLin(model.cntvect[], 1)
+    
+    # define callbacks and pass them to CONOPT
+    setup_message(model)
+
+    if result != 0
+        error("error when initialising CONOPT")
+    end
 end
 
 # this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
@@ -411,9 +449,9 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     setup_model(dest, src)
     setup_inner(dest)
     
-    error("stopping for now")
+    result = LibConopt.COI_Solve(dest.cntvect[])
     
-    result = LibConopt.COI_Solve(model.cntvect[])
+    error("stopping for now, result = ", result)
     
     return index_map, false
 end
