@@ -384,6 +384,7 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     dest.sense = MOI.get(src, MOI.ObjectiveSense())
 end
 
+# TODO any special handling for the other message types beyond smsg?
 function setup_message(model::Optimizer)
     # define the message callback
     function Message(smsg, dmsg, nmsg, msgv, usrmem)::Cint
@@ -394,8 +395,100 @@ function setup_message(model::Optimizer)
         return 0
     end
 
+    # pass the callback to CONOPT
     Message_c = @cfunction($Message, Cint, (Cint, Cint, Cint, Ptr{Cstring}, Ptr{Cvoid}))
     LibConopt.COIDEF_Message(model.cntvect[], Message_c)
+end
+
+function setup_errmsg(model::Optimizer)
+    # define the error message callback
+    function ErrMsg(rowno, colno, posno, msg, usrmem)::Cint
+        if !model.silent
+            if rowno == -1 && colno == -1
+                println("CONOPT error/warning about Jacobian element ", posno)
+            elseif rowno == -1
+                println("CONOPT error/warning about variable ", colno)
+            elseif colno == -1
+                println("CONOPT error/warning about constraint ", rowno)
+            else
+                println("CONOPT error/warning about variable ", colno, " appearing in constraint ", rowno)
+            end
+            print(": ", unsafe_string(pointer(msg)))
+        end
+        return 0
+    end
+
+    # pass the callback to CONOPT
+    ErrMsg_c = @cfunction($ErrMsg, Cint, (Cint, Cint, Cint, Ptr{Cstring}, Ptr{Cvoid}))
+    LibConopt.COIDEF_ErrMsg(model.cntvect[], ErrMsg_c)
+end
+
+# TODO this is just a filler now, need to make this actually work
+function setup_status(model::Optimizer)
+    # define the status callback
+    function Status(modsta, solsta, iter, objval, usrmem)::Cint
+        model.rawstatus = "CONOPT stopped"
+        model.solvetime = 10
+        return 0
+    end
+
+    # pass the callback to CONOPT
+    Status_c = @cfunction($Status, Cint, (Cint, Cint, Cint, Cdouble, Ptr{Cvoid}))
+    LibConopt.COIDEF_Status(model.cntvect[], Status_c)
+end
+
+function setup_solution(model::Optimizer)
+    # define the solution callback
+    function Solution(xval, xmar, xbas, xsta, yval, ymar, ybas, ysta, numvar, numcon, usrmem)::Cint
+        # TODO save solution on the julia side
+        return 0
+    end
+
+    # pass the callback to CONOPT
+    Solution_c = @cfunction($Solution, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
+                                              Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
+                                              Cint, Cint, Ptr{Cvoid}))
+    LibConopt.COIDEF_Solution(model.cntvect[], Solution_c)
+end
+
+function setup_readmatrix(model::Optimizer)
+    # define the solution callback
+    function ReadMatrix(lower, curr, upper, vsta, constrtype, rhs, esta, colsta, rowno, value, nlflag,
+                        numvar, numcon, numnz, usrmem)::Cint
+        @assert numvar == length(model.variable_indices)
+        @assert numvar == length(model.nlp_data.constraint_bounds)
+
+        # fill in variable data
+        i = 0
+        for bound in model.nlp_data.constraint_bounds
+            unsafe_store!(lower, bound.lower, i)
+            unsafe_store!(upper, bound.upper, i)
+            i = i+1
+        end
+        
+        return 0
+    end
+
+    # pass the callback to CONOPT
+    ReadMatrix_c = @cfunction($ReadMatrix, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint},
+                                                  Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
+                                                  Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Cint,
+                                                  Cint, Cint, Ptr{Cvoid}))
+    LibConopt.COIDEF_ReadMatrix(model.cntvect[], ReadMatrix_c)
+end
+
+function setup_fdeval(model::Optimizer)
+    # define the solution callback
+    function FDEval(x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numjac, thread, usrmem)::Cint
+        # TODO implement this
+        return 0
+    end
+
+    # pass the callback to CONOPT
+    FDEval_c = @cfunction($FDEval, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cint,
+                                          Ptr{Cint}, Cint, Cint, Ptr{Cint},
+                                          Cint, Cint, Cint, Ptr{Cvoid}))
+    LibConopt.COIDEF_FDEval(model.cntvect[], FDEval_c)
 end
 
 function setup_inner(model::Optimizer)
@@ -405,7 +498,7 @@ function setup_inner(model::Optimizer)
 
     # set problem sizes
     result += LibConopt.COIDEF_NumVar(model.cntvect[], length(model.variable_indices))
-    result += LibConopt.COIDEF_NumCon(model.cntvect[], model.num_constraints + 1) # objective counts as another constraint here
+    result += LibConopt.COIDEF_NumCon(model.cntvect[], length(model.nlp_model.constraints)) # objective already included here
 
     # number of Jacobian nonzeroes: each slack var created for a ranged row adds a Jacobian nnz;
     # objective also counts as constraint and is already included in jacobian_structure
@@ -419,15 +512,19 @@ function setup_inner(model::Optimizer)
     
     # objective information
     result += LibConopt.COIDEF_OptDir(model.cntvect[], model.sense == MOI.MAX_SENSE ? 1 : -1)
-    # in model.nlp_model, we store objective as a constraint, hence use ObjCon (not ObjVar) here;
-    # we add objective as the last constraint, hence set it to position of the last constraint
-    result += LibConopt.COIDEF_ObjCon(model.cntvect[], length(model.nlp_model.constraints))
+    # in model.nlp_model, we store objective as the last constraint, hence use ObjCon (not ObjVar) here
+    result += LibConopt.COIDEF_ObjCon(model.cntvect[], length(model.nlp_model.constraints)-1)
     
     # tell CONOPT that our function evaluations include the linear terms
     result += LibConopt.COIDEF_FVincLin(model.cntvect[], 1)
     
     # define callbacks and pass them to CONOPT
     setup_message(model)
+    setup_errmsg(model)
+    setup_status(model)
+    setup_solution(model)
+    setup_readmatrix(model)
+    setup_fdeval(model)
 
     if result != 0
         error("error when initialising CONOPT")
