@@ -10,12 +10,19 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     params::Dict{String,String} # solver parameters
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
     variable_indices::Vector{MOI.VariableIndex} # list of variable indices
+    variable_lower::Dict{MOI.VariableIndex, Real} # variable lower bounds
+    variable_upper::Dict{MOI.VariableIndex, Real} # variable upper bounds
+    var_index_to_pos::Dict{MOI.VariableIndex, Int} # positions of variables in CONOPT arrays
     num_constraints::Int        # number of constraints
     num_ranged::Int             # number of ranged constraints
     jacobian_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column)
     jacobian_nonlinear_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column), only nonlinear terms
     hessian_structure::Vector{Tuple{Int,Int}} # Hessian Lagrangian sparsity structure as a vector of tuples (row,column)
     sense::MOI.OptimizationSense # objective sense
+    variable_primal_start::Vector{Union{Nothing,Float64}} # starting values of primal variables
+    
+    # parameters
+    lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded
     
     # NLP data
     nlp_model::Union{Nothing,MOI.Nonlinear.Model} # specialised NLP model structure
@@ -41,12 +48,18 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             Dict{String,String}(), # parameters
             0,                     # default number of threads
             MOI.VariableIndex[],   # list of variable indices
+            Dict{MOI.VariableIndex, Real}(), # variable lower bounds
+            Dict{MOI.VariableIndex, Real}(), # variable upper bounds
+            Dict{MOI.VariableIndex, Int}(), # positions of variables in CONOPT arrays
             0,                     # number of constraints
             0,                     # number of ranged constraints
             Tuple{Int,Int}[],      # Jacobian sparsity structure
             Tuple{Int,Int}[],      # Jacobian nonlinear sparsity structure
             Tuple{Int,Int}[],      # Hessian sparsity structure
             MOI.FEASIBILITY_SENSE, # objective sense
+            Union{Nothing,Float64}[], # primal starting values
+            
+            1e+15,                 # CONOPT's default Lim_Variable parameter
             
             MOI.Nonlinear.Model(), # NLP model
             MOI.NLPBlockData([], _EmptyNLPEvaluator(), false), # empty block data
@@ -281,7 +294,41 @@ function MOI.supports(
     return true
 end
 
+### starting values of primal variables
 
+function MOI.supports(
+    ::Optimizer,
+    ::MOI.VariablePrimalStart,
+    ::Type{MOI.VariableIndex},
+)
+    return true
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.VariablePrimalStart,
+    vi::MOI.VariableIndex,
+)
+    if _is_parameter(vi)
+        throw(MOI.GetAttributeNotAllowed(attr, "Variable is a Parameter"))
+    end
+    MOI.throw_if_not_valid(model, vi)
+    return model.variable_primal_start[vi] #TODO handle index properly
+end
+
+function MOI.set(
+    model::Optimizer,
+    attr::MOI.VariablePrimalStart,
+    vi::MOI.VariableIndex,
+    value::Union{Real,Nothing},
+)
+    if _is_parameter(vi)
+        throw(MOI.SetAttributeNotAllowed(attr, "Variable is a Parameter"))
+    end
+    MOI.throw_if_not_valid(model, vi)
+    model.variable_primal_start[vi] = value #TODO handle index properly
+    return
+end
 
 ###
 ### _EmptyNLPEvaluator
@@ -308,25 +355,45 @@ MOI.supports_incremental_interface(::Optimizer) = false
 function setup_model(dest::Optimizer, src::MOI.ModelLike)
     # Variables
     dest.variable_indices = MOI.get(src, MOI.ListOfVariableIndices())
+    
+    # Map index to position in CONOPT arrays (this helps more efficient handling of sparse information)
+    for i in 1:length(dest.variable_indices)
+        dest.var_index_to_pos[dest.variable_indices[i]] = i-1
+    end
 
     # Constraints of type (f in set); count and add to NLP model
     for f in Base.uniontypes(_FUNCTIONS)
         for set in Base.uniontypes(_SETS)
             nconss = MOI.get(src, MOI.NumberOfConstraints{f, set}())
+            
             if set == MOI.Interval{Float64}
                 dest.num_ranged += nconss
             end
             dest.num_constraints += nconss
             conss_indices = MOI.get(src, MOI.ListOfConstraintIndices{f,set}())
+            
             for index in conss_indices
-                cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
                 cons_set = MOI.get(src, MOI.ConstraintSet(), index)
+                cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
+                if f == MOI.VariableIndex
+                    if set == MOI.GreaterThan{Float64}
+                        dest.variable_lower[cons_function] = MOI.constant(cons_set)
+                    elseif set == MOI.LessThan{Float64}
+                        dest.variable_upper[cons_function] = MOI.constant(cons_set)
+                    elseif set == MOI.EqualTo{Float64}
+                        dest.variable_lower[cons_function] = MOI.constant(cons_set)
+                        dest.variable_upper[cons_function] = MOI.constant(cons_set)
+                    else set == MOI.Interval{Float64}
+                        dest.variable_lower[cons_function] = cons_set.lower
+                        dest.variable_upper[cons_function] = cons_set.upper
+                    end
+                end
                 MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
             end
         end
     end
     #dest.num_constraints += MOI.get(src, MOI.NumberOfConstraints{MOI.VectorOfVariables, MOI.VectorNonlinearOracle{Float64}}()) # TODO implement support for these
-    println("\nnumber of constraints is ", dest.num_constraints)
+    println("\nNumber of constraints is ", dest.num_constraints)
     
     # Add objective to NLP model (as constraint, since this is what CONOPT expects)
     obj_attr = nothing
@@ -457,15 +524,40 @@ function setup_readmatrix(model::Optimizer)
                         numvar, numcon, numnz, usrmem)::Cint
         @assert numvar == length(model.variable_indices)
         @assert numvar == length(model.nlp_data.constraint_bounds)
+        
+        return 0
 
+        # TODO make sure to properly keep track of variable indices
         # fill in variable data
         i = 0
-        for bound in model.nlp_data.constraint_bounds
-            unsafe_store!(lower, bound.lower, i)
-            unsafe_store!(upper, bound.upper, i)
+        for bound in model.nlp_data.constraint_bounds # TODO this is wrong! get variable bound by another way
+            if bound.lower != -Inf || bound.lower > -model.lim_variable
+                unsafe_store!(lower, bound.lower, i)
+            end
+            if bound.upper != Inf || bound.upper < model.lim_variable
+                unsafe_store!(upper, bound.upper, i)
+            end
             i = i+1
         end
+
+        # set starting values, if any are available, otherwise pick a number between the bounds
+        for i in 1:length(model.variable_primal_start)
+            inner.x[i] = something(
+                model.variable_primal_start[i],
+                clamp(0.0, model.nlp_data.constraint_bounds.lower[i], model.nlp_data.constraint_bounds.upper[i]),
+            )
+            # TODO what about unbounded variables?
+        end
         
+        # fill in constraint data
+        i = 0
+        for cons_bound in model.nlp_data.constraint_bounds
+            show(cons_bound)
+            println("")
+            println("")
+            i = i+1
+        end
+
         return 0
     end
 
