@@ -12,7 +12,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     variable_indices::Vector{MOI.VariableIndex} # list of variable indices
     variable_lower::Dict{MOI.VariableIndex, Real} # variable lower bounds
     variable_upper::Dict{MOI.VariableIndex, Real} # variable upper bounds
-    var_index_to_pos::Dict{MOI.VariableIndex, Int} # positions of variables in CONOPT arrays
+    var_index_to_pos::Dict{MOI.VariableIndex, Int} # positions of variables in CONOPT arrays and variable_indices (1-indexed)
     num_constraints::Int        # number of constraints
     num_ranged::Int             # number of ranged constraints
     jacobian_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column)
@@ -50,7 +50,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             MOI.VariableIndex[],   # list of variable indices
             Dict{MOI.VariableIndex, Real}(), # variable lower bounds
             Dict{MOI.VariableIndex, Real}(), # variable upper bounds
-            Dict{MOI.VariableIndex, Int}(), # positions of variables in CONOPT arrays
+            Dict{MOI.VariableIndex, Int}(), # positions of variables
             0,                     # number of constraints
             0,                     # number of ranged constraints
             Tuple{Int,Int}[],      # Jacobian sparsity structure
@@ -358,7 +358,7 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     
     # Map index to position in CONOPT arrays (this helps more efficient handling of sparse information)
     for i in 1:length(dest.variable_indices)
-        dest.var_index_to_pos[dest.variable_indices[i]] = i-1
+        dest.var_index_to_pos[dest.variable_indices[i]] = i
     end
 
     # Constraints of type (f in set); count and add to NLP model
@@ -375,7 +375,7 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
             for index in conss_indices
                 cons_set = MOI.get(src, MOI.ConstraintSet(), index)
                 cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
-                if f == MOI.VariableIndex
+                if f == MOI.VariableIndex # in this case, the function is the variable index
                     if set == MOI.GreaterThan{Float64}
                         dest.variable_lower[cons_function] = MOI.constant(cons_set)
                     elseif set == MOI.LessThan{Float64}
@@ -524,39 +524,40 @@ function setup_readmatrix(model::Optimizer)
                         numvar, numcon, numnz, usrmem)::Cint
         @assert numvar == length(model.variable_indices)
         @assert numvar == length(model.nlp_data.constraint_bounds)
-        
-        return 0
 
-        # TODO make sure to properly keep track of variable indices
         # fill in variable data
-        i = 0
-        for bound in model.nlp_data.constraint_bounds # TODO this is wrong! get variable bound by another way
-            if bound.lower != -Inf || bound.lower > -model.lim_variable
-                unsafe_store!(lower, bound.lower, i)
+        for index in keys(model.variable_lower)
+            if model.variable_lower[index] > -model.lim_variable
+                @assert model.var_index_to_pos[index] <= numvar
+                unsafe_store!(lower, model.variable_lower[index], model.var_index_to_pos[index])
             end
-            if bound.upper != Inf || bound.upper < model.lim_variable
-                unsafe_store!(upper, bound.upper, i)
-            end
-            i = i+1
         end
 
-        # set starting values, if any are available, otherwise pick a number between the bounds
-        for i in 1:length(model.variable_primal_start)
-            inner.x[i] = something(
-                model.variable_primal_start[i],
-                clamp(0.0, model.nlp_data.constraint_bounds.lower[i], model.nlp_data.constraint_bounds.upper[i]),
-            )
-            # TODO what about unbounded variables?
+        for index in keys(model.variable_upper)
+            println("\ndoing stuff for upper bounds ")
+            if model.variable_upper[index] < model.lim_variable
+                @assert model.var_index_to_pos[index] <= numvar
+                unsafe_store!(upper, model.variable_upper[index], model.var_index_to_pos[index])
+            end
         end
+
+        ## set starting values, if any are available, otherwise pick a number between the bounds
+        #for i in 1:length(model.variable_primal_start)
+        #    inner.x[i] = something(
+        #        model.variable_primal_start[i],
+        #        clamp(0.0, model.nlp_data.constraint_bounds.lower[i], model.nlp_data.constraint_bounds.upper[i]),
+        #    )
+        #    # TODO what about unbounded variables?
+        #end
         
         # fill in constraint data
-        i = 0
-        for cons_bound in model.nlp_data.constraint_bounds
-            show(cons_bound)
-            println("")
-            println("")
-            i = i+1
-        end
+        #i = 0
+        #for cons_bound in model.nlp_data.constraint_bounds
+        #    show(cons_bound)
+        #    println("")
+        #    println("")
+        #    i = i+1
+        #end
 
         return 0
     end
@@ -637,6 +638,8 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     
     setup_model(dest, src)
     setup_inner(dest)
+    
+    println("\ncalling solve!")
     
     result = LibConopt.COI_Solve(dest.cntvect[])
     
