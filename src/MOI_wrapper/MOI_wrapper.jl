@@ -313,7 +313,7 @@ function MOI.get(
         throw(MOI.GetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    return model.variable_primal_start[vi] #TODO handle index properly
+    return model.variable_primal_start[model.var_index_to_pos[vi]]
 end
 
 function MOI.set(
@@ -326,7 +326,7 @@ function MOI.set(
         throw(MOI.SetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    model.variable_primal_start[vi] = value #TODO handle index properly
+    model.variable_primal_start[model.var_index_to_pos[vi]] = value
     return
 end
 
@@ -387,8 +387,9 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
                         dest.variable_lower[cons_function] = cons_set.lower
                         dest.variable_upper[cons_function] = cons_set.upper
                     end
+                else
+                    MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
                 end
-                MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
             end
         end
     end
@@ -522,10 +523,12 @@ function setup_readmatrix(model::Optimizer)
     # define the solution callback
     function ReadMatrix(lower, curr, upper, vsta, constrtype, rhs, esta, colsta, rowno, value, nlflag,
                         numvar, numcon, numnz, usrmem)::Cint
-        @assert numvar == length(model.variable_indices)
-        @assert numvar == length(model.nlp_data.constraint_bounds)
+        @assert numvar == length(model.variable_indices) + model.num_ranged
+        norigvars = length(model.variable_indices)
 
         # fill in variable data
+        
+        # variable lower bounds
         for index in keys(model.variable_lower)
             if model.variable_lower[index] > -model.lim_variable
                 @assert model.var_index_to_pos[index] <= numvar
@@ -533,31 +536,66 @@ function setup_readmatrix(model::Optimizer)
             end
         end
 
+        # variable upper bounds
         for index in keys(model.variable_upper)
-            println("\ndoing stuff for upper bounds ")
             if model.variable_upper[index] < model.lim_variable
                 @assert model.var_index_to_pos[index] <= numvar
                 unsafe_store!(upper, model.variable_upper[index], model.var_index_to_pos[index])
             end
         end
 
-        ## set starting values, if any are available, otherwise pick a number between the bounds
-        #for i in 1:length(model.variable_primal_start)
-        #    inner.x[i] = something(
-        #        model.variable_primal_start[i],
-        #        clamp(0.0, model.nlp_data.constraint_bounds.lower[i], model.nlp_data.constraint_bounds.upper[i]),
-        #    )
-        #    # TODO what about unbounded variables?
-        #end
+        # set starting values, if any are available, otherwise pick a number between the bounds
+        # TODO this assumes that variable_primal_start has numvar entries; which might not be the case? should it be enforced somehow?
+        for i in 1:length(model.variable_primal_start)
+            index = model.variable_indices[i]
+            start_value = something(
+                model.variable_primal_start[i],
+                clamp(0.0, model.variable_lower[index], model.variable_upper[index]),
+            )
+            # TODO what about unbounded variables?
+            @assert i <= numvar
+            unsafe_store!(curr, start_value, i)
+        end
         
         # fill in constraint data
-        #i = 0
-        #for cons_bound in model.nlp_data.constraint_bounds
-        #    show(cons_bound)
-        #    println("")
-        #    println("")
-        #    i = i+1
-        #end
+        
+        @assert length(model.nlp_data.constraint_bounds) == numcon
+        nslackvars = 0
+        for i in 1:numcon-1 # the last constraint is the objective, not handling it here
+            conslhs = model.nlp_data.constraint_bounds[i].lower
+            consrhs = model.nlp_data.constraint_bounds[i].upper
+
+            @assert conslhs <= consrhs
+
+            if conslhs > -model.lim_variable && consrhs < model.lim_variable # lim_variable is the value beyond which a value is considered infinite
+                unsafe_store!(constrtype, 0, i) # an equality or a ranged row modelled as equality
+                if conslhs != consrhs
+                    # range constraint lhs <= g(x) <= rhs: reformulate as g(x) - s = 0 and lhs <= s <= rhs
+                    unsafe_store!(rhs, 0.0, i)
+                    unsafe_store!(lower, conslhs, norigvars + nslackvars)
+                    unsafe_store!(upper, consrhs, norigvars + nslackvars)
+
+                    # set initial value of slack variable
+                    unsafe_store!(curr, clamp(0.0, conslhs, consrhs), norigvars + nslackvars)
+                    nslackvars = nslackvars + 1
+                else
+                    unsafe_store!(rhs, conslhs, i)
+                end
+            elseif conslhs > -model.lim_variable
+                unsafe_store!(constrtype, 1, i)
+                unsafe_store!(rhs, conslhs, i)
+            elseif conslhs < model.lim_variable
+                unsafe_store!(constrtype, 2, i)
+                unsafe_store!(rhs, consrhs, i)
+            else
+                unsafe_store!(constrtype, 3, i)
+            end
+        end
+        @assert norigvars + nslackvars == numvar
+
+        # the last constraint is the objective
+        unsafe_store!(constrtype, 3, numcon) # objective must be a free row
+        unsafe_store!(rhs, 0.0, numcon)
 
         return 0
     end
@@ -590,7 +628,7 @@ function setup_inner(model::Optimizer)
     result = 0
 
     # set problem sizes
-    result += LibConopt.COIDEF_NumVar(model.cntvect[], length(model.variable_indices))
+    result += LibConopt.COIDEF_NumVar(model.cntvect[], length(model.variable_indices) + model.num_ranged) # add a slack variable for each ranged constraint
     result += LibConopt.COIDEF_NumCon(model.cntvect[], length(model.nlp_model.constraints)) # objective already included here
 
     # number of Jacobian nonzeroes: each slack var created for a ranged row adds a Jacobian nnz;
