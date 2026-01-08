@@ -15,7 +15,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     var_index_to_pos::Dict{MOI.VariableIndex, Int} # positions of variables in CONOPT arrays and variable_indices (1-indexed)
     num_constraints::Int        # number of constraints
     num_ranged::Int             # number of ranged constraints
-    jacobian_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column), sorted by column and then row
+    jacobian_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column)
     jacobian_nonlinear_structure::Vector{Tuple{Int,Int}} # Jacobian sparsity structure as a vector of tuples (row,column), only nonlinear terms
     hessian_structure::Vector{Tuple{Int,Int}} # Hessian Lagrangian sparsity structure as a vector of tuples (row,column)
     sense::MOI.OptimizationSense # objective sense
@@ -413,6 +413,9 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     println("\nNLP model constraints count: ")
     show(length(dest.nlp_model.constraints))
     
+    println("\nthe objective constraint is: ")
+    print(obj)
+    
     # NLP evaluation data
     dest.nlp_data = MOI.NLPBlockData(MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices),)
     println("\nnlp_data:\n")
@@ -423,9 +426,13 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     
     # get Jacobian sparsity structure as a vector of tuples (row, column)
     dest.jacobian_structure = MOI.jacobian_structure(dest.nlp_data.evaluator)
+    #jacobian_values = zeros(length(dest.jacobian_structure))
+    #MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, jacobian_values, zeros(length(dest.variable_indices)))
+
+    #dest.jacobian_struct_values = 
 
     # sort Jacobian structure by column, then row
-    sort(dest.jacobian_structure, lt = (x, y) -> (x[2] < y[2] || (x[2] == y[2] && x[1] < y[1])))
+    #sort(dest.jacobian_structure, lt = (x, y) -> (x[2] < y[2] || (x[2] == y[2] && x[1] < y[1])))
     
     # get nonlinear Jacobian entries: use Hessian for this, if, for a given constraint, a variable has at
     # least one Hessian nonzero corresponding to it, then this constraint is nonlinear in this variable
@@ -602,13 +609,24 @@ function setup_readmatrix(model::Optimizer)
         unsafe_store!(constrtype, 3, numcon) # objective must be a free row
         unsafe_store!(rhs, 0.0, numcon)
         
+        # before passing Jacobian information to CONOPT, do some sorting
+        jacobian_values = zeros(length(model.jacobian_structure))
+        # we are interested in the constant part of the Jacobian, so take any reference point, like 0
+        #MOI.eval_constraint_jacobian(model.nlp_data.evaluator, jacobian_values, zeros(length(model.variable_indices)))
+        jacobian_struct_values = [(entry[1], entry[2], jacobian_values[idx]) for (idx, entry) in enumerate(model.jacobian_structure)]
+        #println("\njacobian structure and values concatenated:\n")
+        #show(jacobian_struct_values)
+
+        # sort Jacobian structure and values by column, then row
+        sort!(jacobian_struct_values, lt = (x, y) -> (x[2] < y[2] || (x[2] == y[2] && x[1] < y[1])))
+
+        # Jacobian information
         column = 0
         colno = 1
         entryno = 1
-        previous = nothing
-        # Jacobian information
-        for entry in model.jacobian_structure
-            if entry != previous # MathOptInterface doesn't guarantee no duplicate entries, therefore check for such
+        previous = (-1, -1)
+        for entry in jacobian_struct_values
+            if entry[1] != previous[1] || entry[2] != previous[2] # MathOptInterface doesn't guarantee no duplicate entries, therefore check for such
                 if entry[2] > column
                     # start of new column
                     column = entry[2]
@@ -620,15 +638,17 @@ function setup_readmatrix(model::Optimizer)
                 unsafe_store!(rowno, entry[1] - 1, entryno)
                 entryno = entryno + 1
             end
-            previous = entry
+            previous = (entry[1], entry[2])
         end
         
+        # slack variables are not in nlp_model - therefore add the corresponding entries separately
         for i in 1:model.num_ranged
             @assert colno <= numvar
             @assert entryno <= numnz
             unsafe_store!(colsta, entryno - 1, colno)
             unsafe_store!(rowno, ranged_cons_indices[i] - 1, entryno)
             entryno = entryno + 1
+            colno = colno + 1
         end
         @assert entryno == numnz + 1
         unsafe_store!(colsta, numnz, numvar + 1)
@@ -636,19 +656,23 @@ function setup_readmatrix(model::Optimizer)
         # mark nonlinear elements in the jacobian
         i = 1
         entryno = 1
-        for entry in model.jacobian_nonlinear_structure
+        jacobian_nonlinear_structure_sorted = sort(model.jacobian_nonlinear_structure, lt = (x, y) -> (x[2] < y[2] || (x[2] == y[2] && x[1] < y[1])))
+        for entry in jacobian_nonlinear_structure_sorted
             # skip duplicates
-            while i < numnz && model.jacobian_structure[i] == model.jacobian_structure[i+1]
+            while i < numnz && jacobian_struct_values[i] == jacobian_struct_values[i+1]
                 i = i + 1
             end
             
             # go through linear entries
-            while entry != model.jacobian_structure[i]
+            while entry[1] != jacobian_struct_values[i][1] && entry[2] != jacobian_struct_values[i][2]
                 @assert entryno <= numnz
                 println("\nDEBUG: setting nlflag at ", entryno, " to 0\n")
                 unsafe_store!(nlflag, 0, entryno)
                 i = i + 1
                 entryno = entryno + 1
+                
+                # this is a linear entry - get the (constant) Jacobian value
+                #value = 
             end
             
             # now we have reached entry in jacobian_structure: set the nlflag to 1
