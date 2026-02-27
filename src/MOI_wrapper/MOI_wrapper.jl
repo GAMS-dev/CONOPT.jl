@@ -2,6 +2,8 @@
 ### Structures and constants
 ###
 
+include("C_wrapper.jl")
+
 mutable struct Optimizer <: MOI.AbstractOptimizer
     cntvect::Ref{Ptr{Cvoid}}    # pointer to the CONOPT control vector
     silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
@@ -239,8 +241,6 @@ end
 
 MOI.get(model::Optimizer, ::MOI.NumberOfThreads) = model.threads
 
-MOI.get(model::Optimizer, ::MOI.NumberOfThreads) = model.threads
-
 # gap tolerances not supported by CONOPT
 MOI.supports(::Optimizer, ::MOI.AbsoluteGapTolerance) = false
 MOI.supports(::Optimizer, ::MOI.RelativeGapTolerance) = false
@@ -249,6 +249,8 @@ MOI.supports(::Optimizer, ::MOI.RelativeGapTolerance) = false
 
 function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
     # TODO return actual status
+    # Need to write a callback that stores the solution status in the
+    # object. Then we will be able to query the solution status here.
     return MOI.OPTIMIZE_NOT_CALLED
 end
 
@@ -276,11 +278,13 @@ MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solvetime
 
 function MOI.supports_constraint(
     ::Optimizer,
-    ::Type{<:_FUNCTIONS,},
-    ::Type{<:_SETS},
+    ::Type{<:_FUNCTIONS},
+    ::Type{<:_SETS}
 )
     return true
 end
+
+
 
 function MOI.supports(
     ::Optimizer,
@@ -365,13 +369,13 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     for f in Base.uniontypes(_FUNCTIONS)
         for set in Base.uniontypes(_SETS)
             nconss = MOI.get(src, MOI.NumberOfConstraints{f, set}())
-            
+
             if set == MOI.Interval{Float64}
                 dest.num_ranged += nconss
             end
             dest.num_constraints += nconss
             conss_indices = MOI.get(src, MOI.ListOfConstraintIndices{f,set}())
-            
+
             for index in conss_indices
                 cons_set = MOI.get(src, MOI.ConstraintSet(), index)
                 cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
@@ -395,8 +399,10 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     end
     #dest.num_constraints += MOI.get(src, MOI.NumberOfConstraints{MOI.VectorOfVariables, MOI.VectorNonlinearOracle{Float64}}()) # TODO implement support for these
     println("\nNumber of constraints is ", dest.num_constraints)
-    
+
     # Add objective to NLP model (as constraint, since this is what CONOPT expects)
+    # TODO Make sure that the objective constraint is stored.
+    # Also, we need to consider the case that the objective is a variable.
     obj_attr = nothing
     for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
         if attr isa MOI.ObjectiveFunction
@@ -404,294 +410,86 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
         end
     end
     obj = MOI.get(src, obj_attr)
-    #MOI.Nonlinear.set_objective(dest.nlp_model, obj)
     MOI.Nonlinear.add_constraint(dest.nlp_model, obj, MOI.Interval(-Inf, Inf))
-    
+
     println("\nNLP model: ")
     show(dest.nlp_model)
-    
+
     println("\nNLP model constraints count: ")
     show(length(dest.nlp_model.constraints))
-    
+
     println("\nthe objective constraint is: ")
     print(obj)
-    
+
     # NLP evaluation data
     dest.nlp_data = MOI.NLPBlockData(MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices),)
     println("\nnlp_data:\n")
     show(dest.nlp_data)
-    
+
     # initialise the evaluator before we can use it
     MOI.initialize(dest.nlp_data.evaluator, [:Grad, :Jac, :JacVec, :Hess, :ExprGraph])
-    
-    # get Jacobian sparsity structure as a vector of tuples (row, column)
-    dest.jacobian_structure = MOI.jacobian_structure(dest.nlp_data.evaluator)
-    #jacobian_values = zeros(length(dest.jacobian_structure))
-    #MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, jacobian_values, zeros(length(dest.variable_indices)))
 
-    #dest.jacobian_struct_values = 
-
-    # sort Jacobian structure by column, then row
-    #sort(dest.jacobian_structure, lt = (x, y) -> (x[2] < y[2] || (x[2] == y[2] && x[1] < y[1])))
-    
     # get nonlinear Jacobian entries: use Hessian for this, if, for a given constraint, a variable has at
     # least one Hessian nonzero corresponding to it, then this constraint is nonlinear in this variable
     for (index, constraint) in dest.nlp_model.constraints
         nnz = Set()
         row = MOI.Nonlinear.ordinal_index(dest.nlp_data.evaluator, index)
-        
+
         # get Hessian structure of this constraint as (col1, col2)
         hessian_structure_i = MOI.hessian_constraint_structure(dest.nlp_data.evaluator, row)
-        
+
         # add each col to nnz
         for (col1, col2) in hessian_structure_i
             push!(nnz, col1)
             push!(nnz, col2)
         end
-        
+
         # add all the nonzeroes in the form (row, col) to the vector of nonlinear jacobian entries
         for col in nnz
             push!(dest.jacobian_nonlinear_structure, (row, col))
         end
     end
-    
+
     # get sparsity structure of the Hessian of the Lagrangian as a vector of tuples (row, column)
     dest.hessian_structure = MOI.hessian_lagrangian_structure(dest.nlp_data.evaluator)
-    
+
     # get objective sense
     dest.sense = MOI.get(src, MOI.ObjectiveSense())
 end
 
 # TODO any special handling for the other message types beyond smsg?
 function setup_message(model::Optimizer)
-    # define the message callback
-    function Message(smsg, dmsg, nmsg, msgv, usrmem)::Cint
-        msg = unsafe_wrap(Vector{Cstring}, msgv, smsg; own = false)
-        for i = 1:smsg
-            println("message: ", unsafe_string(pointer(msg[i])))
-        end
-        return 0
-    end
-
     # pass the callback to CONOPT
-    Message_c = @cfunction($Message, Cint, (Cint, Cint, Cint, Ptr{Cstring}, Ptr{Cvoid}))
+    Message_c = @cfunction(_Message_cb, Cint, (Cint, Cint, Cint, Ptr{Cstring}, Ptr{Cvoid}))
     LibConopt.COIDEF_Message(model.cntvect[], Message_c)
 end
 
-function setup_errmsg(model::Optimizer)
-    # define the error message callback
-    function ErrMsg(rowno, colno, posno, msg, usrmem)::Cint
-        if !model.silent
-            if rowno == -1 && colno == -1
-                println("CONOPT error/warning about Jacobian element ", posno)
-            elseif rowno == -1
-                println("CONOPT error/warning about variable ", colno)
-            elseif colno == -1
-                println("CONOPT error/warning about constraint ", rowno)
-            else
-                println("CONOPT error/warning about variable ", colno, " appearing in constraint ", rowno)
-            end
-            print(": ", unsafe_string(pointer(msg)))
-        end
-        return 0
-    end
+using Infiltrator
 
+function setup_errmsg(model::Optimizer)
     # pass the callback to CONOPT
-    ErrMsg_c = @cfunction($ErrMsg, Cint, (Cint, Cint, Cint, Ptr{Cstring}, Ptr{Cvoid}))
+    ErrMsg_c = @cfunction(_ErrMsg_cb, Cint, (Cint, Cint, Cint, Ptr{Cchar}, Ptr{Cvoid}))
     LibConopt.COIDEF_ErrMsg(model.cntvect[], ErrMsg_c)
 end
 
 # TODO this is just a filler now, need to make this actually work
 function setup_status(model::Optimizer)
-    # define the status callback
-    function Status(modsta, solsta, iter, objval, usrmem)::Cint
-        model.rawstatus = "CONOPT stopped"
-        model.solvetime = 10
-        return 0
-    end
-
     # pass the callback to CONOPT
-    Status_c = @cfunction($Status, Cint, (Cint, Cint, Cint, Cdouble, Ptr{Cvoid}))
+    Status_c = @cfunction(_Status_cb, Cint, (Cint, Cint, Cint, Cdouble, Ptr{Cvoid}))
     LibConopt.COIDEF_Status(model.cntvect[], Status_c)
 end
 
 function setup_solution(model::Optimizer)
-    # define the solution callback
-    function Solution(xval, xmar, xbas, xsta, yval, ymar, ybas, ysta, numvar, numcon, usrmem)::Cint
-        # TODO save solution on the julia side
-        return 0
-    end
-
     # pass the callback to CONOPT
-    Solution_c = @cfunction($Solution, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
+    Solution_c = @cfunction(_Solution_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
                                               Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
                                               Cint, Cint, Ptr{Cvoid}))
     LibConopt.COIDEF_Solution(model.cntvect[], Solution_c)
 end
 
 function setup_readmatrix(model::Optimizer)
-    # define the solution callback
-    function ReadMatrix(lower, curr, upper, vsta, constrtype, rhs, esta, colsta, rowno, value, nlflag,
-                        numvar, numcon, numnz, usrmem)::Cint
-        @assert numvar == length(model.variable_indices) + model.num_ranged
-        norigvars = length(model.variable_indices)
-
-        # fill in variable data
-        
-        # variable lower bounds
-        for index in keys(model.variable_lower)
-            if model.variable_lower[index] > -model.lim_variable
-                @assert model.var_index_to_pos[index] <= numvar
-                unsafe_store!(lower, model.variable_lower[index], model.var_index_to_pos[index])
-            end
-        end
-
-        # variable upper bounds
-        for index in keys(model.variable_upper)
-            if model.variable_upper[index] < model.lim_variable
-                @assert model.var_index_to_pos[index] <= numvar
-                unsafe_store!(upper, model.variable_upper[index], model.var_index_to_pos[index])
-            end
-        end
-
-        # set starting values, if any are available, otherwise pick a number between the bounds
-        # TODO this assumes that variable_primal_start has numvar entries; which might not be the case? should it be enforced somehow?
-        for i in 1:length(model.variable_primal_start)
-            index = model.variable_indices[i]
-            start_value = something(
-                model.variable_primal_start[i],
-                clamp(0.0, model.variable_lower[index], model.variable_upper[index]),
-            )
-            # TODO what about unbounded variables?
-            @assert i <= numvar
-            unsafe_store!(curr, start_value, i)
-        end
-        
-        # fill in constraint data
-        
-        @assert length(model.nlp_data.constraint_bounds) == numcon
-        nslackvars = 0
-        ranged_cons_indices = []
-        for i in 1:numcon-1 # the last constraint is the objective, not handling it here
-            conslhs = model.nlp_data.constraint_bounds[i].lower
-            consrhs = model.nlp_data.constraint_bounds[i].upper
-
-            @assert conslhs <= consrhs
-
-            if conslhs > -model.lim_variable && consrhs < model.lim_variable # lim_variable is the value beyond which a value is considered infinite
-                unsafe_store!(constrtype, 0, i) # an equality or a ranged row modelled as equality
-                if conslhs != consrhs
-                    # range constraint lhs <= g(x) <= rhs: reformulate as g(x) - s = 0 and lhs <= s <= rhs
-                    unsafe_store!(rhs, 0.0, i)
-                    unsafe_store!(lower, conslhs, norigvars + nslackvars)
-                    unsafe_store!(upper, consrhs, norigvars + nslackvars)
-
-                    # set initial value of slack variable
-                    unsafe_store!(curr, clamp(0.0, conslhs, consrhs), norigvars + nslackvars)
-                    nslackvars = nslackvars + 1
-                    push!(ranged_cons_indices, i)
-                else
-                    unsafe_store!(rhs, conslhs, i)
-                end
-            elseif conslhs > -model.lim_variable
-                unsafe_store!(constrtype, 1, i)
-                unsafe_store!(rhs, conslhs, i)
-            elseif conslhs < model.lim_variable
-                unsafe_store!(constrtype, 2, i)
-                unsafe_store!(rhs, consrhs, i)
-            else
-                unsafe_store!(constrtype, 3, i)
-            end
-        end
-        @assert norigvars + nslackvars == numvar
-
-        # the last constraint is the objective
-        unsafe_store!(constrtype, 3, numcon) # objective must be a free row
-        unsafe_store!(rhs, 0.0, numcon)
-        
-        # before passing Jacobian information to CONOPT, do some sorting
-        jacobian_values = zeros(length(model.jacobian_structure))
-        # we are interested in the constant part of the Jacobian, so take any reference point, like 0
-        #MOI.eval_constraint_jacobian(model.nlp_data.evaluator, jacobian_values, zeros(length(model.variable_indices)))
-        jacobian_struct_values = [(entry[1], entry[2], jacobian_values[idx]) for (idx, entry) in enumerate(model.jacobian_structure)]
-        #println("\njacobian structure and values concatenated:\n")
-        #show(jacobian_struct_values)
-
-        # sort Jacobian structure and values by column, then row
-        sort!(jacobian_struct_values, lt = (x, y) -> (x[2] < y[2] || (x[2] == y[2] && x[1] < y[1])))
-
-        # Jacobian information
-        column = 0
-        colno = 1
-        entryno = 1
-        previous = (-1, -1)
-        for entry in jacobian_struct_values
-            if entry[1] != previous[1] || entry[2] != previous[2] # MathOptInterface doesn't guarantee no duplicate entries, therefore check for such
-                if entry[2] > column
-                    # start of new column
-                    column = entry[2]
-                    @assert colno <= numvar
-                    unsafe_store!(colsta, entryno - 1, colno)
-                    colno = colno + 1
-                end
-                @assert entryno <= numnz
-                unsafe_store!(rowno, entry[1] - 1, entryno)
-                entryno = entryno + 1
-            end
-            previous = (entry[1], entry[2])
-        end
-        
-        # slack variables are not in nlp_model - therefore add the corresponding entries separately
-        for i in 1:model.num_ranged
-            @assert colno <= numvar
-            @assert entryno <= numnz
-            unsafe_store!(colsta, entryno - 1, colno)
-            unsafe_store!(rowno, ranged_cons_indices[i] - 1, entryno)
-            entryno = entryno + 1
-            colno = colno + 1
-        end
-        @assert entryno == numnz + 1
-        unsafe_store!(colsta, numnz, numvar + 1)
-        
-        # mark nonlinear elements in the jacobian
-        i = 1
-        entryno = 1
-        jacobian_nonlinear_structure_sorted = sort(model.jacobian_nonlinear_structure, lt = (x, y) -> (x[2] < y[2] || (x[2] == y[2] && x[1] < y[1])))
-        for entry in jacobian_nonlinear_structure_sorted
-            # skip duplicates
-            while i < numnz && jacobian_struct_values[i] == jacobian_struct_values[i+1]
-                i = i + 1
-            end
-            
-            # go through linear entries
-            while entry[1] != jacobian_struct_values[i][1] && entry[2] != jacobian_struct_values[i][2]
-                @assert entryno <= numnz
-                println("\nDEBUG: setting nlflag at ", entryno, " to 0\n")
-                unsafe_store!(nlflag, 0, entryno)
-                i = i + 1
-                entryno = entryno + 1
-                
-                # this is a linear entry - get the (constant) Jacobian value
-                #value = 
-            end
-            
-            # now we have reached entry in jacobian_structure: set the nlflag to 1
-            @assert entryno <= numnz
-            unsafe_store!(nlflag, 1, entryno)
-            entryno = entryno + 1
-            i = i + 1
-        end
-        
-        # the remaining nlflags (after last nonlinear entry) are 0
-        for i in entryno:numnz
-            unsafe_store!(nlflag, 0, i)
-        end
-
-        return 0
-    end
-
     # pass the callback to CONOPT
-    ReadMatrix_c = @cfunction($ReadMatrix, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint},
+    ReadMatrix_c = @cfunction(_ReadMatrix_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint},
                                                   Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
                                                   Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Cint,
                                                   Cint, Cint, Ptr{Cvoid}))
@@ -699,14 +497,8 @@ function setup_readmatrix(model::Optimizer)
 end
 
 function setup_fdeval(model::Optimizer)
-    # define the solution callback
-    function FDEval(x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numjac, thread, usrmem)::Cint
-        # TODO implement this
-        return 0
-    end
-
     # pass the callback to CONOPT
-    FDEval_c = @cfunction($FDEval, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cint,
+    FDEval_c = @cfunction(_FDEval_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cint,
                                           Ptr{Cint}, Cint, Cint, Ptr{Cint},
                                           Cint, Cint, Cint, Ptr{Cvoid}))
     LibConopt.COIDEF_FDEval(model.cntvect[], FDEval_c)
@@ -730,15 +522,15 @@ function setup_inner(model::Optimizer)
 
     # number of entries in the Hessian of the Lagrangian
     result += LibConopt.COIDEF_NumHess(model.cntvect[], length(model.hessian_structure))
-    
+
     # objective information
     result += LibConopt.COIDEF_OptDir(model.cntvect[], model.sense == MOI.MAX_SENSE ? 1 : -1)
     # in model.nlp_model, we store objective as the last constraint, hence use ObjCon (not ObjVar) here
     result += LibConopt.COIDEF_ObjCon(model.cntvect[], length(model.nlp_model.constraints)-1)
-    
+
     # tell CONOPT that our function evaluations include the linear terms
     result += LibConopt.COIDEF_FVincLin(model.cntvect[], 1)
-    
+
     # define callbacks and pass them to CONOPT
     setup_message(model)
     setup_errmsg(model)
@@ -746,6 +538,8 @@ function setup_inner(model::Optimizer)
     setup_solution(model)
     setup_readmatrix(model)
     setup_fdeval(model)
+
+    LibConopt.COIDEF_UsrMem(model.cntvect[], pointer_from_objref(model))
 
     if result != 0
         error("error when initialising CONOPT")
@@ -755,24 +549,24 @@ end
 # this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
 function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     # TODO: what we need to get here: matrix of affine terms, obj and conss functions to evaluate, numbers of variables, nonzeroes, etc., Jacobian and Hessian structure, first and second derivative evaluations
-    
+
     println("optimize! call for moving stuff")
     #MOI.empty!(dest)
     index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
-    
+
     show(src)
     println("\nmodel: ")
     show(src.model)
-    
+
     setup_model(dest, src)
     setup_inner(dest)
-    
+
     println("\ncalling solve!")
-    
+
     result = LibConopt.COI_Solve(dest.cntvect[])
-    
+
     error("stopping for now, result = ", result)
-    
+
     return index_map, false
 end
 
