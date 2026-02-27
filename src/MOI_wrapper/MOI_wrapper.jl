@@ -4,6 +4,84 @@
 
 include("C_wrapper.jl")
 
+const CONOPT_INF = 1e15
+
+mutable struct ModelData
+    num_variables::Int          # the number of variables in the problem
+    num_constraints::Int        # number of constraints
+    num_ranged::Int             # number of ranged constraints
+
+    variable_indices::Vector{MOI.VariableIndex} # list of variable indices
+    variable_lower::Vector{Float64}             # variable lower bounds
+    variable_upper::Vector{Float64}             # variable upper bounds
+    variable_primal_start::Vector{Float64}      # starting values of primal variables
+    var_index_to_pos::Dict{MOI.VariableIndex, Int} # positions of variables in CONOPT arrays and variable_indices (1-indexed)
+
+    constraint_rhs::Vector{Float64}     # the rhs for the constraints
+    constraint_type::Vector{Cint}       # the constraint type 0: equality, 1: geq, 2: leq, 3, free
+
+    objective_row_index::Int    # the index for the objective row. TODO: handle the case when the objective is a variable.
+
+    sense::MOI.OptimizationSense # objective sense
+
+    function ModelData()
+        return new(
+            0,                          # number of variables
+            0,                          # number of constraints
+            0,                          # number of ranged rows
+            MOI.VariableIndex[],        # list of variable indices
+            Float64[],                  # variable lower bounds
+            Float64[],                  # variable upper bounds
+            Float64[],                  # primal starting values
+            Dict(),                     # positions of variables
+            Float64[],                  # constraint rhs
+            Cint[],
+            -1,                         # the objective row index
+            MOI.FEASIBILITY_SENSE       # objective sense
+            )
+    end
+end
+
+mutable struct JacobianStructure
+    start::Vector{Cint}     # the column starts of the Jacobian matrix
+    index::Vector{Cint}     # the row indices for the Jacobian matrix
+    values::Vector{Float64} # the values for the Jacobian matrix
+    nlflag::Vector{Cint}    # the nonlinear flags for the Jacobian matrix
+
+    function JacobianStructure()
+        return new(
+            Cint[],
+            Cint[],
+            Float64[],
+            Cint[]
+            )
+    end
+end
+
+mutable struct HessianStructure
+    cols::Vector{Cint}  # the column indices for the Hessian
+    rows::Vector{Cint}  # the row indices for the Hessian
+
+    function HessianStructure()
+        return new(
+            Cint[],
+            Cint[]
+            )
+    end
+end
+
+mutable struct EvaluationCache
+    row_to_jac_index::Vector{Vector{Int}}   # mapping from a row to non-linear entries in the jacobian
+    cached_jac::Vector{Float64} # store for the jacobian values computed by the evaluator
+
+    function EvaluationCache()
+        return new(
+            Vector{Int}[],
+            Float64[]
+        )
+    end
+end
+
 mutable struct Optimizer <: MOI.AbstractOptimizer
     cntvect::Ref{Ptr{Cvoid}}    # pointer to the CONOPT control vector
     silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
@@ -11,20 +89,14 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     name::String                # name of the model
     params::Dict{String,String} # solver parameters
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
-    variable_indices::Vector{MOI.VariableIndex} # list of variable indices
-    variable_lower::Dict{MOI.VariableIndex, Real} # variable lower bounds
-    variable_upper::Dict{MOI.VariableIndex, Real} # variable upper bounds
-    var_index_to_pos::Dict{MOI.VariableIndex, Int} # positions of variables in CONOPT arrays and variable_indices (1-indexed)
-    constraint_lower::Vector{Float64}   # the lower bounds for the constraints
-    constraint_upper::Vector{Float64}   # the upper bounds for the constraints
-    objective_row_index::Int    # the index for the objective row. TODO: handle the case when the objective is a variable.
-    num_constraints::Int        # number of constraints
-    num_ranged::Int             # number of ranged constraints
-    hessian_structure::Vector{Tuple{Int,Int}} # Hessian Lagrangian sparsity structure as a vector of tuples (row,column)
-    cached_jac::Vector{Float64} # store for the jacobian values computed by the evaluator
-    row_to_jac_index::Vector{Vector{Int}}   # mapping from a row to non-linear entries in the jacobian
-    sense::MOI.OptimizationSense # objective sense
-    variable_primal_start::Vector{Union{Nothing,Float64}} # starting values of primal variables
+
+    # problem Structures
+    model_data::ModelData       # a cache of the model data
+    jac_structure::JacobianStructure    # a cache of the jacobian structure
+    hess_structure::HessianStructure    # a cache of the hessian structure
+
+    # evaluation cache
+    eval_cache::EvaluationCache # a structure to store a cache of the function, derivative and second derivative evaluation.
 
     # parameters
     lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded
@@ -46,32 +118,24 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             error("could not create a CONOPT control vector")
         end
         model = new(
-            cntvect, # CONOPT control vector
-            false,                 # silent
-            1e+06,                 # time limit
-            "Model",               # model name
-            Dict{String,String}(), # parameters
-            0,                     # default number of threads
-            MOI.VariableIndex[],   # list of variable indices
-            Dict{MOI.VariableIndex, Real}(), # variable lower bounds
-            Dict{MOI.VariableIndex, Real}(), # variable upper bounds
-            Dict{MOI.VariableIndex, Int}(), # positions of variables
-            0,                     # number of constraints
-            0,                     # number of ranged constraints
-            Tuple{Int,Int}[],      # Hessian sparsity structure
-            Vector{Float64}(),     # the cache for the jacobian values
-            Vector{Vector{Int}}(), # the row to jacobian index mapping
-            MOI.FEASIBILITY_SENSE, # objective sense
-            Union{Nothing,Float64}[], # primal starting values
+            cntvect,                # CONOPT control vector
+            false,                  # silent
+            1e+06,                  # time limit
+            "Model",                # model name
+            Dict{String,String}(),  # parameters
+            0,                      # default number of threads
+            ModelData(),
+            JacobianStructure(),
+            HessianStructure(),
+            EvaluationCache(),
+            1e+15,                  # CONOPT's default Lim_Variable parameter
 
-            1e+15,                 # CONOPT's default Lim_Variable parameter
-
-            MOI.Nonlinear.Model(), # NLP model
+            MOI.Nonlinear.Model(),  # NLP model
             MOI.NLPBlockData([], _EmptyNLPEvaluator(), false), # empty block data
             MOI.Nonlinear.SparseReverseMode(), # automatic differentiation
 
-            "unknown",             # rawstatus
-            0                      # solving time
+            "unknown",              # rawstatus
+            0                       # solving time
         )
         finalizer(LibConopt.COI_Free, model.cntvect)
         return model
@@ -358,40 +422,63 @@ MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
 
 MOI.supports_incremental_interface(::Optimizer) = false
 
+# updates the variable bounds and also updates the primal start to fit between the bounds
+function update_variable_bounds(model_data::ModelData, var_index::Int; lower::Float64 = -Inf, upper::Float64 = Inf)
+    if lower > -Inf
+        model_data.variable_lower[var_index] = lower
+    end
+
+    if upper < Inf
+        model_data.variable_upper[var_index] = upper
+    end
+
+    model_data.variable_primal_start[var_index] = clamp(
+            model_data.variable_primal_start[var_index],
+            model_data.variable_lower[var_index],
+            model_data.variable_upper[var_index]
+           )
+end
+
 function setup_model(dest::Optimizer, src::MOI.ModelLike)
     # ==========================================
     # 1. Variables, Bounds, and Primal Starts
     # ==========================================
-    dest.variable_indices = MOI.get(src, MOI.ListOfVariableIndices())
-    n_vars = length(dest.variable_indices)
+    dest.model_data.variable_indices = MOI.get(src, MOI.ListOfVariableIndices())
+    n_vars = length(dest.model_data.variable_indices)
+    dest.model_data.num_variables = n_vars
 
     # Pre-allocate variable arrays (assuming these exist in your struct)
-    dest.variable_primal_start = zeros(Float64, n_vars)
+    dest.model_data.variable_primal_start = zeros(Float64, n_vars)
+
+    # setting the initial values of the lower and upper bounds
+    dest.model_data.variable_lower = fill(-CONOPT_INF, n_vars)
+    dest.model_data.variable_upper = fill(CONOPT_INF, n_vars)
 
     # Map index to position and extract initial guesses
-    for (i, vi) in enumerate(dest.variable_indices)
-        dest.var_index_to_pos[vi] = i
+    for (i, vi) in enumerate(dest.model_data.variable_indices)
+        dest.model_data.var_index_to_pos[vi] = i
 
         # Extract the starting guess (x_0) if the user provided one
         start_val = MOI.get(src, MOI.VariablePrimalStart(), vi)
         if start_val !== nothing
-            dest.variable_primal_start[i] = start_val
+            dest.model_data.variable_primal_start[i] = start_val
         else
             # Default to 0.0. (Note: some NLP solvers prefer a small non-zero
             # like 1e-5 to avoid dividing by zero in initial gradients).
-            dest.variable_primal_start[i] = 0.0
+            dest.model_data.variable_primal_start[i] = 0.0
         end
     end
 
     # ==========================================
     # 2. Constraints and Objective
     # ==========================================
-    dest.num_constraints = 0
-    dest.num_ranged = 0
+    ranged_indices = Vector{Int}()
+    dest.model_data.num_constraints = 0
+    dest.model_data.num_ranged = 0
 
     # Initialize empty arrays for constraint bounds
-    dest.constraint_lower = Float64[]
-    dest.constraint_upper = Float64[]
+    dest.model_data.constraint_rhs = Float64[]
+    dest.model_data.constraint_type = Cint[]
 
     for f in Base.uniontypes(_FUNCTIONS)
         for set in Base.uniontypes(_SETS)
@@ -405,37 +492,52 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
                 cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
 
                 if f == MOI.VariableIndex
-                    v_idx = dest.var_index_to_pos[cons_function]
+                    v_idx = dest.model_data.var_index_to_pos[cons_function]
 
                     if set <: MOI.GreaterThan
-                        dest.variable_lower[v_idx] = MOI.constant(cons_set)
+                        update_variable_bounds(dest.model_data, v_idx, lower=MOI.constant(cons_set))
                     elseif set <: MOI.LessThan
-                        dest.variable_upper[v_idx] = MOI.constant(cons_set)
+                        update_variable_bounds(dest.model_data, v_idx, upper=MOI.constant(cons_set))
                     elseif set <: MOI.EqualTo
-                        dest.variable_lower[v_idx] = MOI.constant(cons_set)
-                        dest.variable_upper[v_idx] = MOI.constant(cons_set)
+                        update_variable_bounds(
+                            dest.model_data,
+                            v_idx,
+                            lower=MOI.constant(cons_set),
+                            upper=MOI.constant(cons_set)
+                            )
                     elseif set <: MOI.Interval
-                        dest.variable_lower[v_idx] = cons_set.lower
-                        dest.variable_upper[v_idx] = cons_set.upper
+                        update_variable_bounds(
+                            dest.model_data,
+                            v_idx,
+                            lower=cons_set.lower,
+                            upper=cons_set.upper
+                            )
                     end
                 else
                     # This is a real structural constraint (row in the Jacobian)
-                    dest.num_constraints += 1
+                    dest.model_data.num_constraints += 1
 
                     # Extract the row bounds (g_L <= g(x) <= g_U)
                     if set <: MOI.GreaterThan
-                        push!(dest.constraint_lower, MOI.constant(cons_set))
-                        push!(dest.constraint_upper, Inf)
+                        push!(dest.model_data.constraint_rhs, MOI.constant(cons_set))
+                        push!(dest.model_data.constraint_type, 1)
                     elseif set <: MOI.LessThan
-                        push!(dest.constraint_lower, -Inf)
-                        push!(dest.constraint_upper, MOI.constant(cons_set))
+                        push!(dest.model_data.constraint_rhs, MOI.constant(cons_set))
+                        push!(dest.model_data.constraint_type, 2)
                     elseif set <: MOI.EqualTo
-                        push!(dest.constraint_lower, MOI.constant(cons_set))
-                        push!(dest.constraint_upper, MOI.constant(cons_set))
+                        push!(dest.model_data.constraint_rhs, MOI.constant(cons_set))
+                        push!(dest.model_data.constraint_type, 0)
                     elseif set <: MOI.Interval
-                        dest.num_ranged += 1
-                        push!(dest.constraint_lower, cons_set.lower)
-                        push!(dest.constraint_upper, cons_set.upper)
+                        dest.model_data.num_ranged += 1
+                        push!(ranged_indices, dest.model_data.num_constraints)
+                        push!(dest.model_data.constraint_rhs, 0.0)
+                        push!(dest.model_data.constraint_type, 0)
+
+                        # adding the variable information for the range slack variables
+                        push!(dest.model_data.variable_lower, cons_set.lower)
+                        push!(dest.model_data.variable_upper, cons_set.upper)
+                        push!(dest.model_data.variable_primal_start,
+                              clamp(0.0, cons_set.lower, cons_set.upper))
                     end
 
                     MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
@@ -455,23 +557,23 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
 
     if obj_attr !== nothing
         obj = MOI.get(src, obj_attr)
-        MOI.Nonlinear.add_constraint(dest.nlp_model, obj, MOI.Interval(-Inf, Inf))
+        MOI.Nonlinear.add_constraint(dest.nlp_model, obj, MOI.Interval(-CONOPT_INF, CONOPT_INF))
 
-        dest.num_constraints += 1
-        dest.objective_row_index = dest.num_constraints
+        dest.model_data.num_constraints += 1
+        dest.model_data.objective_row_index = dest.model_data.num_constraints
 
         # The objective row mathematically has no bounds
-        push!(dest.constraint_lower, -Inf)
-        push!(dest.constraint_upper, Inf)
+        push!(dest.model_data.constraint_rhs, 0.0)
+        push!(dest.model_data.constraint_type, 3)
     end
 
-    dest.sense = MOI.get(src, MOI.ObjectiveSense())
+    dest.model_data.sense = MOI.get(src, MOI.ObjectiveSense())
 
     # ==========================================
     # 3. Evaluator Initialization
     # ==========================================
     dest.nlp_data = MOI.NLPBlockData(
-        MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices)
+        MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.model_data.variable_indices)
     )
 
     MOI.initialize(dest.nlp_data.evaluator, [:Jac, :Hess])
@@ -489,35 +591,57 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, v1, x1)
     MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, v2, x2)
 
-    p = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][2], raw_jac_str[i][1]))
+    p_jac = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][2], raw_jac_str[i][1]))
 
-    sorted_rows = [raw_jac_str[i][1] for i in p]
-    sorted_cols = [raw_jac_str[i][2] for i in p]
-    sorted_v1 = v1[p]
-    sorted_v2 = v2[p]
+    # we need to subtract 1 from the rows for Conopt indexing. We don't need to subtract 1 from the
+    # cols, since the index is not explicitly used.
+    sorted_rows = [raw_jac_str[i][1] - 1 for i in p_jac]
+    sorted_cols = [raw_jac_str[i][2] for i in p_jac]
+    sorted_v1 = v1[p_jac]
+    sorted_v2 = v2[p_jac]
 
-    dest.jac_colptr = ones(Int, n_vars + 1)
+    dest.jac_structure.start = zeros(Cint, n_vars + 1)
+    # counting the number of non-zeros per column
     for c in sorted_cols
-        dest.jac_colptr[c + 1] += 1
+        dest.jac_structure.start[c + 1] += 1
     end
-    cumsum!(dest.jac_colptr, dest.jac_colptr)
-    dest.jac_rowval = sorted_rows
 
-    dest.jac_is_nonlinear = BitVector(undef, total_jac_nnz)
-    dest.jac_constant_vals = zeros(total_jac_nnz)
-    dest.row_to_jac_indices = [Int[] for _ in 1:dest.num_constraints]
+    # creating the start list
+    for i in 1:n_vars
+        dest.jac_structure.start[i + 1] += dest.jac_structure.start[i]
+    end
 
+    # we just store the sorted rows as the index
+    dest.jac_structure.index = sorted_rows
+
+    # initialising the nlflag, values and row to jac mapping
+    dest.jac_structure.nlflag = zeros(total_jac_nnz)
+    dest.jac_structure.values = zeros(total_jac_nnz)
+    dest.eval_cache.row_to_jac_index = [Int[] for _ in 1:dest.model_data.num_constraints]
+
+    # extracting the nonlinear flags and the coefficients for linear terms. The linear terms are
+    # identified by evaluating the jacobian at two different points. If the result for the jacobian
+    # is the same between the two evaluations, then the jacobian is constant for that element.
     for i in 1:total_jac_nnz
         if !isapprox(sorted_v1[i], sorted_v2[i], atol=1e-12)
-            dest.jac_is_nonlinear[i] = true
-            dest.jac_constant_vals[i] = 0.0
+            dest.jac_structure.nlflag[i] = 1
+            dest.jac_structure.values[i] = 0.0
 
-            r = sorted_rows[i]
-            push!(dest.row_to_jac_indices[r], i)
+            r = sorted_rows[i] + 1
+            push!(dest.eval_cache.row_to_jac_index[r], i)
         else
-            dest.jac_is_nonlinear[i] = false
-            dest.jac_constant_vals[i] = sorted_v1[i]
+            dest.jac_structure.nlflag[i] = 0
+            dest.jac_structure.values[i] = sorted_v1[i]
         end
+    end
+
+    # adding the slack variables to the jacobian structure
+    slack_idx = dest.model_data.num_variables + 1
+    for i in 1:dest.model_data.num_ranged
+        push!(dest.jac_structure.start, dest.jac_structure.start[slack_idx - 1] + 1)
+        push!(dest.jac_structure.index, ranged_indices[i] - 1)
+        push!(dest.jac_structure.values, 1.0)
+        push!(dest.jac_structure.nlflag, 0.0)
     end
 
     # ==========================================
@@ -527,14 +651,8 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
 
     p_hess = sortperm(1:length(raw_hess_str), by = i -> (raw_hess_str[i][2], raw_hess_str[i][1]))
 
-    dest.hess_rowval = [raw_hess_str[i][1] for i in p_hess]
-    sorted_hess_cols = [raw_hess_str[i][2] for i in p_hess]
-
-    dest.hess_colptr = ones(Int, n_vars + 1)
-    for c in sorted_hess_cols
-        dest.hess_colptr[c + 1] += 1
-    end
-    cumsum!(dest.hess_colptr, dest.hess_colptr)
+    dest.hess_structure.rows = [raw_hess_str[i][1] for i in p_hess]
+    dest.hess_structure.cols = [raw_hess_str[i][2] for i in p_hess]
 end
 
 # TODO any special handling for the other message types beyond smsg?
@@ -590,23 +708,23 @@ function setup_inner(model::Optimizer)
     result = 0
 
     # set problem sizes
-    result += LibConopt.COIDEF_NumVar(model.cntvect[], length(model.variable_indices) + model.num_ranged) # add a slack variable for each ranged constraint
-    result += LibConopt.COIDEF_NumCon(model.cntvect[], length(model.nlp_model.constraints)) # objective already included here
+    result += LibConopt.COIDEF_NumVar(model.cntvect[], model.model_data.num_variables + model.model_data.num_ranged) # add a slack variable for each ranged constraint
+    result += LibConopt.COIDEF_NumCon(model.cntvect[], model.model_data.num_constraints) # objective already included here
 
     # number of Jacobian nonzeroes: each slack var created for a ranged row adds a Jacobian nnz;
     # objective also counts as constraint and is already included in jacobian_structure
-    result += LibConopt.COIDEF_NumNz(model.cntvect[], length(model.jacobian_structure) + model.num_ranged)
+    result += LibConopt.COIDEF_NumNz(model.cntvect[], length(model.jac_structure.index))
 
     # number of nonlinear Jacobian nonzeroes: both of constraints and objective (nlp_model already accounts for it)
-    result += LibConopt.COIDEF_NumNlNz(model.cntvect[], length(model.jacobian_nonlinear_structure))
+    result += LibConopt.COIDEF_NumNlNz(model.cntvect[], sum(model.jac_structure.nlflag))
 
     # number of entries in the Hessian of the Lagrangian
-    result += LibConopt.COIDEF_NumHess(model.cntvect[], length(model.hessian_structure))
+    result += LibConopt.COIDEF_NumHess(model.cntvect[], length(model.hess_structure.cols))
 
     # objective information
-    result += LibConopt.COIDEF_OptDir(model.cntvect[], model.sense == MOI.MAX_SENSE ? 1 : -1)
+    result += LibConopt.COIDEF_OptDir(model.cntvect[], model.model_data.sense == MOI.MAX_SENSE ? 1 : -1)
     # in model.nlp_model, we store objective as the last constraint, hence use ObjCon (not ObjVar) here
-    result += LibConopt.COIDEF_ObjCon(model.cntvect[], length(model.nlp_model.constraints)-1)
+    result += LibConopt.COIDEF_ObjCon(model.cntvect[], model.model_data.objective_row_index - 1)
 
     # tell CONOPT that our function evaluations include the linear terms
     result += LibConopt.COIDEF_FVincLin(model.cntvect[], 1)
