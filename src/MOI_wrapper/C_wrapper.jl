@@ -155,7 +155,20 @@ function _ReadMatrix_cb(lower, curr, upper, vsta, constrtype, rhs, esta, colsta,
     unsafe_copyto!(value, pointer(model.jac_structure.values), numnz)
     unsafe_copyto!(nlflag, pointer(model.jac_structure.nlflag), numnz)
 
-    return 0
+    # emptying the matrix data stored by Julia that is no longer needed
+    empty!(model.jac_structure.start)
+    empty!(model.jac_structure.index)
+    empty!(model.jac_structure.values)
+    empty!(model.jac_structure.nlflag)
+
+    # We also no longer need the bounds and rhs arrays
+    empty!(model.model_data.variable_lower)
+    empty!(model.model_data.variable_upper)
+    empty!(model.model_data.variable_primal_start)
+    empty!(model.model_data.constraint_rhs)
+    empty!(model.model_data.constraint_type)
+
+    return Cint(0)
 end
 
 # define the function and derivative evaluation callback

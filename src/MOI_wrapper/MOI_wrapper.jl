@@ -579,80 +579,85 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     MOI.initialize(dest.nlp_data.evaluator, [:Jac, :Hess])
 
     # ==========================================
-    # 4. Jacobian Logic (CSC, Perturbation, Map)
+    # 4. Matrix and Hessian Construction
     # ==========================================
     raw_jac_str = MOI.jacobian_structure(dest.nlp_data.evaluator)
     total_jac_nnz = length(raw_jac_str)
 
-    x1 = randn(n_vars)
-    x2 = x1 .+ 0.5
-    v1 = zeros(total_jac_nnz)
-    v2 = zeros(total_jac_nnz)
-    MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, v1, x1)
-    MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, v2, x2)
+    # 1. Evaluate Jacobian once at the primal start to extract the linear constants
+    jac_vals = zeros(total_jac_nnz)
+    MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, jac_vals, dest.model_data.variable_primal_start)
 
+    # 2. Sort Jacobian into Column-Major (CSC expectation)
     p_jac = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][2], raw_jac_str[i][1]))
 
-    # we need to subtract 1 from the rows for Conopt indexing. We don't need to subtract 1 from the
-    # cols, since the index is not explicitly used.
-    sorted_rows = [raw_jac_str[i][1] - 1 for i in p_jac]
-    sorted_cols = [raw_jac_str[i][2] for i in p_jac]
-    sorted_v1 = v1[p_jac]
-    sorted_v2 = v2[p_jac]
+    sorted_rows = Cint[raw_jac_str[i][1] - 1 for i in p_jac] # 0-based for C
+    sorted_cols = Int[raw_jac_str[i][2] for i in p_jac]      # 1-based for Julia counting
+    sorted_jac_vals = jac_vals[p_jac]
 
+    # 3. Build CSC Column Pointers (0-based)
     dest.jac_structure.start = zeros(Cint, n_vars + 1)
-    # counting the number of non-zeros per column
     for c in sorted_cols
         dest.jac_structure.start[c + 1] += 1
     end
-
-    # creating the start list
     for i in 1:n_vars
         dest.jac_structure.start[i + 1] += dest.jac_structure.start[i]
     end
-
-    # we just store the sorted rows as the index
     dest.jac_structure.index = sorted_rows
 
-    # initialising the nlflag, values and row to jac mapping
-    dest.jac_structure.nlflag = zeros(total_jac_nnz)
-    dest.jac_structure.values = zeros(total_jac_nnz)
-    dest.eval_cache.row_to_jac_index = [Int[] for _ in 1:dest.model_data.num_constraints]
+    # 4. Identify Nonlinear Variables PER ROW using Constraint Hessians
+    # Because you added the objective as a constraint, num_constraints exactly matches
+    # the evaluator's row count. This makes the loop incredibly clean.
+    nonlinear_vars_in_row = [BitSet() for _ in 1:dest.model_data.num_constraints]
 
-    # extracting the nonlinear flags and the coefficients for linear terms. The linear terms are
-    # identified by evaluating the jacobian at two different points. If the result for the jacobian
-    # is the same between the two evaluations, then the jacobian is constant for that element.
-    for i in 1:total_jac_nnz
-        if !isapprox(sorted_v1[i], sorted_v2[i], atol=1e-12)
-            dest.jac_structure.nlflag[i] = 1
-            dest.jac_structure.values[i] = 0.0
+    for r in 1:dest.model_data.num_constraints
+        # Ask MOI for the (col1, col2) pairs where the 2nd derivative is non-zero
+        hess_struct_r = MOI.hessian_constraint_structure(dest.nlp_data.evaluator, r)
 
-            r = sorted_rows[i] + 1
-            push!(dest.eval_cache.row_to_jac_index[r], i)
-        else
-            dest.jac_structure.nlflag[i] = 0
-            dest.jac_structure.values[i] = sorted_v1[i]
+        for (c1, c2) in hess_struct_r
+            push!(nonlinear_vars_in_row[r], c1)
+            push!(nonlinear_vars_in_row[r], c2)
         end
     end
 
-    # adding the slack variables to the jacobian structure
+    # 5. Apply the precise Row/Col mapping to the Jacobian elements
+    dest.jac_structure.nlflag = zeros(Cint, total_jac_nnz)
+    dest.jac_structure.values = zeros(Float64, total_jac_nnz)
+    dest.eval_cache.row_to_jac_index = [Int[] for _ in 1:dest.model_data.num_constraints]
+
+    for i in 1:total_jac_nnz
+        r = sorted_rows[i] + 1 # Convert back to 1-based to index into our Julia arrays
+        c = sorted_cols[i]     # 1-based column
+
+        # Check if column 'c' has a non-zero second derivative in this specific row 'r'
+        if c in nonlinear_vars_in_row[r]
+            dest.jac_structure.nlflag[i] = Cint(1)
+            dest.jac_structure.values[i] = 0.0
+
+            # Map this row so our C-callback knows exactly where to update
+            push!(dest.eval_cache.row_to_jac_index[r], i)
+        else
+            dest.jac_structure.nlflag[i] = Cint(0)
+            dest.jac_structure.values[i] = sorted_jac_vals[i] # Store the linear coefficient
+        end
+    end
+
+    # 6. Add Slack Variables to the Jacobian
     slack_idx = dest.model_data.num_variables + 1
     for i in 1:dest.model_data.num_ranged
         push!(dest.jac_structure.start, dest.jac_structure.start[slack_idx - 1] + 1)
-        push!(dest.jac_structure.index, ranged_indices[i] - 1)
+        push!(dest.jac_structure.index, Cint(ranged_indices[i] - 1))
         push!(dest.jac_structure.values, 1.0)
-        push!(dest.jac_structure.nlflag, 0.0)
+        push!(dest.jac_structure.nlflag, Cint(0))
+        slack_idx += 1
     end
 
-    # ==========================================
-    # 5. Hessian Structure (CSC Format)
-    # ==========================================
+    # 7. Complete the overall Lagrangian Hessian CSC Formatting (for the actual Solve)
     raw_hess_str = MOI.hessian_lagrangian_structure(dest.nlp_data.evaluator)
-
     p_hess = sortperm(1:length(raw_hess_str), by = i -> (raw_hess_str[i][2], raw_hess_str[i][1]))
 
-    dest.hess_structure.rows = [raw_hess_str[i][1] for i in p_hess]
-    dest.hess_structure.cols = [raw_hess_str[i][2] for i in p_hess]
+    dest.hess_structure.rows = Cint[raw_hess_str[i][1] - 1 for i in p_hess] # 0-based
+    dest.hess_structure.cols = Cint[raw_hess_str[i][2] - 1 for i in p_hess] # 0-based
 end
 
 # TODO any special handling for the other message types beyond smsg?
@@ -763,7 +768,7 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
 
     result = LibConopt.COI_Solve(dest.cntvect[])
 
-    error("stopping for now, result = ", result)
+    #error("stopping for now, result = ", string(result))
 
     return index_map, false
 end
