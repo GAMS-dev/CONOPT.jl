@@ -1,0 +1,664 @@
+###
+### Structures and constants
+###
+
+const CONOPT_INF = 1e15
+
+mutable struct Optimizer <: MOI.AbstractOptimizer
+    conopt_model::Conopt.ConoptModel
+    timelimit::Real             # time limit in seconds
+    name::String                # name of the model
+    params::Dict{String,String} # solver parameters
+    threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
+
+    sense::MOI.OptimizationSense # objective sense
+
+    # parameters
+    lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded
+
+    # NLP data
+    nlp_model::Union{Nothing,MOI.Nonlinear.Model} # specialised NLP model structure
+    nlp_data::MOI.NLPBlockData  # NLP data structure to make use of MOI's evaluation functionality
+    ad_backend::MOI.Nonlinear.AbstractAutomaticDifferentiation # automatic differentiation backend
+
+    # variable mapping MOI to Conopt
+    variable_indices::Vector{MOI.VariableIndex} # list of variable indices
+    var_index_to_pos::Dict{MOI.VariableIndex, Int} # positions of variables in CONOPT arrays and variable_indices (1-indexed)
+
+    # constructor
+    function Optimizer()
+        model = new(
+            Conopt.ConoptModel(),
+            1e+06,                  # time limit
+            "Model",                # model name
+            Dict{String,String}(),  # parameters
+            0,                      # default number of threads
+            MOI.FEASIBILITY_SENSE,  # objective sense
+            1e+15,                  # CONOPT's default Lim_Variable parameter
+
+            MOI.Nonlinear.Model(),  # NLP model
+            MOI.NLPBlockData([], _EmptyNLPEvaluator(), false), # empty block data
+            MOI.Nonlinear.SparseReverseMode(), # automatic differentiation
+
+            MOI.VariableIndex[],        # list of variable indices
+            Dict(),                     # positions of variables
+        )
+        return model
+    end
+end
+
+const _SETS = Union{
+    MOI.GreaterThan{Float64},
+    MOI.LessThan{Float64},
+    MOI.EqualTo{Float64},
+    MOI.Interval{Float64},
+}
+
+const _FUNCTIONS = Union{
+    MOI.VariableIndex,
+    MOI.ScalarAffineFunction{Float64},
+    MOI.ScalarQuadraticFunction{Float64},
+    MOI.ScalarNonlinearFunction,
+}
+
+
+
+###
+### implementations of some basic functions
+###
+
+function Base.summary(io::IO, model::Optimizer)
+    return print(io, "CONOPT solver with the control vector pointer $(model.conopt_model.cntvect)")
+end
+
+function MOI.is_empty(model::Optimizer)
+    # TODO actually check if the model is empty
+    return isempty(model.params)
+end
+
+function MOI.empty!(model::Optimizer)
+    # empty the model (TODO: does this also need to free the C problem?)
+    empty!(model.params)
+
+    # destroying the existing Conopt model, which will call free on the control vector
+    model.conopt_model = Conopt.ConoptModel()
+
+    model.nlp_model = MOI.Nonlinear.Model()
+    model.nlp_data = MOI.NLPBlockData([], _EmptyNLPEvaluator(), false)
+
+    empty!(model.variable_indices)
+    empty!(model.var_index_to_pos)
+    return
+end
+
+
+
+###
+### get, set and supports functions for various Optimizer attributes
+###
+
+# solver name
+function MOI.get(::Optimizer, ::MOI.SolverName)::String
+    return "CONOPT"
+end
+
+# solver version
+function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
+    major = Ref{Cint}(0)
+    minor = Ref{Cint}(0)
+    patch = Ref{Cint}(0)
+    LibConopt.COIGET_Version(major, minor, patch)
+    return string(major[], ".", minor[], ".", patch[])
+end
+
+# raw solver
+MOI.get(model::Optimizer, ::MOI.RawSolver) = model.cntvect
+
+# model name
+MOI.get(model::Optimizer, ::MOI.Name) = model.name
+function MOI.set(model::Optimizer, ::MOI.Name, value::String)
+    if value == model.name
+        return
+    end
+    model.name = value
+    return
+end
+MOI.supports(::Optimizer, ::MOI.Name) = true
+
+# silent
+MOI.supports(::Optimizer, ::MOI.Silent) = true
+function MOI.set(model::Optimizer, ::MOI.Silent, value::Bool)
+    model.silent = value
+    return
+end
+MOI.get(model::Optimizer, ::MOI.Silent) = model.silent
+
+# time limit
+MOI.supports(::Optimizer, ::MOI.TimeLimitSec) = true
+
+function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, value::Real)
+    if value == model.timelimit
+        return
+    end
+    model.timelimit = value
+    coierror = LibConopt.COIDEF_ResLim(model.cntvect[], value);
+    if coierror != 0
+        error("could not set CONOPT time limit")
+    end
+    return
+end
+
+function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, ::Nothing)
+    # removing the time limit -> set the time limit to CONOPT's default
+    if 1e+06 == model.timelimit
+        return
+    end
+    model.timelimit = 1e+06
+    coierror = LibConopt.COIDEF_ResLim(model.cntvect[], 1e+06);
+    if coierror != 0
+        error("could not reset CONOPT time limit")
+    end
+    return
+end
+
+MOI.get(model::Optimizer, ::MOI.TimeLimitSec) = model.timelimit
+
+# objective and solution limits - currently no way to set these in CONOPT
+MOI.supports(::Optimizer, ::MOI.ObjectiveLimit) = false
+MOI.supports(::Optimizer, ::MOI.SolutionLimit) = false
+
+# node limit - CONOPT isn't a branch and bound solver, so this makes no sense
+MOI.supports(::Optimizer, ::MOI.NodeLimit) = false
+
+# solver attributes
+MOI.supports(::Optimizer, ::MOI.RawOptimizerAttribute) = true
+
+
+"""
+    function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
+
+    method for setting raw attributes the Conopt. This is used to pass attributed through to the
+    options callback. However, it also intercepts additional options, such as "LogLevel"
+"""
+function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
+    option_name = attr.name
+
+    if option_name == "LogLevel"
+        log_level_value = Int(value)
+        if log_level_value < 1 || log_level_value > 4
+            @error "Invalid value for LogLevel <" * log_level_value * ">. It must be between 1 and 4"
+        end
+        model.log_level = Int(value)
+    else
+        MOI.set(model, param, string(value))
+    end
+
+
+    return
+end
+
+function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value::String)
+    model.params[param.name] = value
+    # TODO the actual setting of parameters will happen in the Option callback
+    return
+end
+
+function MOI.get(model::Optimizer, param::MOI.RawOptimizerAttribute)
+    # TODO handle non-existing parameters
+    return model.params[param.name]
+end
+
+# number of threads
+MOI.supports(::Optimizer, ::MOI.NumberOfThreads) = true
+
+function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, value::Integer)
+    coierror = LibConopt.COIDEF_ThreadS(model.cntvect[], value);
+    if coierror != 0
+        error("could not set CONOPT number of threads")
+    end
+    model.threads = value
+    return
+end
+
+function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, ::Nothing)
+    coierror = LibConopt.COIDEF_ThreadS(model.cntvect[], 0);
+    if coierror != 0
+        error("could not reset CONOPT number of threads")
+    end
+    model.threads = 0
+    return
+end
+
+MOI.get(model::Optimizer, ::MOI.NumberOfThreads) = model.threads
+
+# gap tolerances not supported by CONOPT
+MOI.supports(::Optimizer, ::MOI.AbsoluteGapTolerance) = false
+MOI.supports(::Optimizer, ::MOI.RelativeGapTolerance) = false
+
+# solve status
+
+function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
+    # TODO return actual status
+    # Need to write a callback that stores the solution status in the
+    # object. Then we will be able to query the solution status here.
+    return MOI.OPTIMIZE_NOT_CALLED
+end
+
+# raw status string explaining why the solver stopped
+MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.conopt_model.raw_status
+
+# solving time in seconds
+MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.conopt_model.solve_time
+
+
+
+###
+### indicate which constraints CONOPT supports
+###
+
+# TODO implement support for these
+# support constraints of the form x in S, where S = {x | l <= f(x) <= u}
+#function MOI.supports_constraint(
+#    ::Optimizer,
+#    ::Type{MOI.VectorOfVariables},
+#    ::Type{MOI.VectorNonlinearOracle{Float64}},
+#)
+#    return true
+#end
+
+function MOI.supports_constraint(
+    ::Optimizer,
+    ::Type{<:_FUNCTIONS},
+    ::Type{<:_SETS}
+)
+    return true
+end
+
+
+
+function MOI.supports(
+    ::Optimizer,
+    ::Union{
+        MOI.ObjectiveSense,
+        MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}},
+        MOI.ObjectiveFunction{MOI.ScalarQuadraticFunction{Float64}},
+        MOI.ObjectiveFunction{MOI.ScalarNonlinearFunction},
+    },
+)
+    return true
+end
+
+### starting values of primal variables
+
+function MOI.supports(
+    ::Optimizer,
+    ::MOI.VariablePrimalStart,
+    ::Type{MOI.VariableIndex},
+)
+    return true
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.VariablePrimalStart,
+    vi::MOI.VariableIndex,
+)
+    if _is_parameter(vi)
+        throw(MOI.GetAttributeNotAllowed(attr, "Variable is a Parameter"))
+    end
+    MOI.throw_if_not_valid(model, vi)
+    return model.conopt_model.model_data.variable_primal_start[model.var_index_to_pos[vi]]
+end
+
+function MOI.set(
+    model::Optimizer,
+    attr::MOI.VariablePrimalStart,
+    vi::MOI.VariableIndex,
+    value::Union{Real,Nothing},
+)
+    if _is_parameter(vi)
+        throw(MOI.SetAttributeNotAllowed(attr, "Variable is a Parameter"))
+    end
+    MOI.throw_if_not_valid(model, vi)
+    model.conopt_model.model_data.variable_primal_start[model.var_index_to_pos[vi]] = value
+    return
+end
+
+###
+### _EmptyNLPEvaluator
+###
+struct _EmptyNLPEvaluator <: MOI.AbstractNLPEvaluator end
+
+MOI.features_available(::_EmptyNLPEvaluator) = [:Grad, :Jac, :Hess]
+MOI.initialize(::_EmptyNLPEvaluator, ::Any) = nothing
+MOI.eval_constraint(::_EmptyNLPEvaluator, g, x) = nothing
+MOI.jacobian_structure(::_EmptyNLPEvaluator) = Tuple{Int64,Int64}[]
+MOI.hessian_lagrangian_structure(::_EmptyNLPEvaluator) = Tuple{Int64,Int64}[]
+MOI.eval_constraint_jacobian(::_EmptyNLPEvaluator, J, x) = nothing
+MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
+
+
+
+###
+### Setting up the model
+###
+
+MOI.supports_incremental_interface(::Optimizer) = false
+
+"""
+    function _update_variable_bounds(model_data::ModelData, var_index::Int; lower::Float64 = -Inf, upper::Float64 = Inf)
+
+    updates the variable bounds and also updates the primal start to fit between the bounds
+"""
+function _update_variable_bounds(model_data::Conopt.ModelData, var_index::Int; lower::Float64 = -Inf, upper::Float64 = Inf)
+    if lower > -Inf
+        model_data.variable_lower[var_index] = lower
+    end
+
+    if upper < Inf
+        model_data.variable_upper[var_index] = upper
+    end
+
+    model_data.variable_primal_start[var_index] = clamp(
+            model_data.variable_primal_start[var_index],
+            model_data.variable_lower[var_index],
+            model_data.variable_upper[var_index]
+           )
+end
+
+
+"""
+    function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
+
+    extracts the variable information from the JuMP model and stores this in a local data structure.
+    This data is passed to Conopt through the user memory pointer. The variable information is
+    processed in the ReadMatrix callback.
+"""
+function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
+    dest.variable_indices = MOI.get(src, MOI.ListOfVariableIndices())
+    n_vars = length(dest.variable_indices)
+    dest.conopt_model.model_data.num_variables = n_vars
+
+    dest.conopt_model.model_data.variable_primal_start = zeros(Float64, n_vars)
+    dest.conopt_model.model_data.variable_lower = fill(-CONOPT_INF, n_vars)
+    dest.conopt_model.model_data.variable_upper = fill(CONOPT_INF, n_vars)
+
+    for (i, vi) in enumerate(dest.variable_indices)
+        dest.var_index_to_pos[vi] = i
+
+        start_val = MOI.get(src, MOI.VariablePrimalStart(), vi)
+        if start_val !== nothing
+            dest.conopt_model.model_data.variable_primal_start[i] = start_val
+        else
+            dest.conopt_model.model_data.variable_primal_start[i] = 0.0
+        end
+    end
+    return
+end
+
+
+function _get_objective_constant(model::Optimizer)::Float64
+    #F = MOI.get(model, MOI.ObjectiveFunctionType())
+
+    #if F == MOI.VariableIndex
+        ## e.g., @objective(model, Min, x) -> No constant
+        #return 0.0
+
+    #elseif F == MOI.ScalarAffineFunction{Float64} || F == MOI.ScalarQuadraticFunction{Float64}
+        # e.g., @objective(model, Min, 2x + 5) -> Constant is 5.0
+        obj_func = MOI.get(model, MOI.ObjectiveFunction())
+        return obj_func.constant
+
+    #else
+        ## If it's a purely nonlinear objective managed by the NLPBlock,
+        ## the constant is baked into the evaluator tree.
+        #return 0.0
+    #end
+end
+
+
+"""
+    function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
+
+    extracts the constraint data from the JuMP model and stores this in a local data structure.
+    The data structure is passed as the user memory in Conopt, and is read in the ReadMatrix method.
+"""
+function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
+    ranged_indices = Vector{Int}()
+    dest.conopt_model.model_data.num_constraints = 0
+    dest.conopt_model.model_data.num_ranged = 0
+
+    dest.conopt_model.model_data.constraint_rhs = Float64[]
+    dest.conopt_model.model_data.constraint_type = Cint[]
+
+    for f in Base.uniontypes(_FUNCTIONS)
+        for set in Base.uniontypes(_SETS)
+            nconss = MOI.get(src, MOI.NumberOfConstraints{f, set}())
+            if nconss == 0; continue; end
+
+            conss_indices = MOI.get(src, MOI.ListOfConstraintIndices{f,set}())
+
+            for index in conss_indices
+                cons_set = MOI.get(src, MOI.ConstraintSet(), index)
+                cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
+
+                if f == MOI.VariableIndex
+                    v_idx = dest.var_index_to_pos[cons_function]
+
+                    if set <: MOI.GreaterThan
+                        _update_variable_bounds(dest.conopt_model.model_data, v_idx, lower=MOI.constant(cons_set))
+                    elseif set <: MOI.LessThan
+                        _update_variable_bounds(dest.conopt_model.model_data, v_idx, upper=MOI.constant(cons_set))
+                    elseif set <: MOI.EqualTo
+                        _update_variable_bounds(dest.conopt_model.model_data, v_idx, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
+                    elseif set <: MOI.Interval
+                        _update_variable_bounds(dest.conopt_model.model_data, v_idx, lower=cons_set.lower, upper=cons_set.upper)
+                    end
+                else
+                    dest.conopt_model.model_data.num_constraints += 1
+
+                    if set <: MOI.GreaterThan
+                        push!(dest.conopt_model.model_data.constraint_rhs, MOI.constant(cons_set))
+                        push!(dest.conopt_model.model_data.constraint_type, 1)
+                    elseif set <: MOI.LessThan
+                        push!(dest.conopt_model.model_data.constraint_rhs, MOI.constant(cons_set))
+                        push!(dest.conopt_model.model_data.constraint_type, 2)
+                    elseif set <: MOI.EqualTo
+                        push!(dest.conopt_model.model_data.constraint_rhs, MOI.constant(cons_set))
+                        push!(dest.conopt_model.model_data.constraint_type, 0)
+                    elseif set <: MOI.Interval
+                        dest.conopt_model.model_data.num_ranged += 1
+                        push!(ranged_indices, dest.conopt_model.model_data.num_constraints)
+                        push!(dest.conopt_model.model_data.constraint_rhs, 0.0)
+                        push!(dest.conopt_model.model_data.constraint_type, 0)
+
+                        push!(dest.conopt_model.model_data.variable_lower, cons_set.lower)
+                        push!(dest.conopt_model.model_data.variable_upper, cons_set.upper)
+                        push!(dest.conopt_model.model_data.variable_primal_start, clamp(0.0, cons_set.lower, cons_set.upper))
+                    end
+
+                    MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
+                end
+            end
+        end
+    end
+
+    # Handle Objective
+    obj_attr = nothing
+    for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
+        if attr isa MOI.ObjectiveFunction
+            obj_attr = attr
+            break
+        end
+    end
+
+    if obj_attr !== nothing
+        obj = MOI.get(src, obj_attr)
+        MOI.Nonlinear.add_constraint(dest.nlp_model, obj, MOI.Interval(-CONOPT_INF, CONOPT_INF))
+
+        dest.conopt_model.model_data.num_constraints += 1
+        dest.conopt_model.model_data.objective_row_index = dest.conopt_model.model_data.num_constraints
+        push!(dest.conopt_model.model_data.constraint_rhs, -obj.constant)
+        push!(dest.conopt_model.model_data.constraint_type, 3)
+    end
+
+    dest.sense = MOI.get(src, MOI.ObjectiveSense())
+
+    return ranged_indices
+end
+
+
+"""
+    function _setup_evaluator!(dest::Optimizer)
+
+    setup the evaluator for the NLP. This is used to idenfity the nonlinear terms in the Jacobian
+    and identify the structure of the Hessian.
+"""
+function _setup_evaluator!(dest::Optimizer)
+    dest.nlp_data = MOI.NLPBlockData(
+        MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices)
+    )
+    MOI.initialize(dest.nlp_data.evaluator, [:Jac, :Hess])
+    return
+end
+
+
+"""
+    function _setup_matrices!(dest::Optimizer, ranged_indices::Vector{Int})
+
+    setup up the jacobian and hessian matrices in a form that can be supplied to Conopt
+"""
+function _setup_matrices!(dest::Optimizer, ranged_indices::Vector{Int})
+    n_vars = dest.conopt_model.model_data.num_variables
+
+    # --- Jacobian Extraction and Setup ---
+    raw_jac_str = MOI.jacobian_structure(dest.nlp_data.evaluator)
+    total_jac_nnz = length(raw_jac_str)
+
+    jac_vals = zeros(total_jac_nnz)
+    MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, jac_vals, dest.conopt_model.model_data.variable_primal_start)
+
+    p_jac = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][2], raw_jac_str[i][1]))
+    sorted_rows = Cint[raw_jac_str[i][1] - 1 for i in p_jac]
+    sorted_cols = Int[raw_jac_str[i][2] for i in p_jac]
+    sorted_jac_vals = jac_vals[p_jac]
+
+    dest.conopt_model.jac_structure.start = zeros(Cint, n_vars + 1)
+    for c in sorted_cols
+        dest.conopt_model.jac_structure.start[c + 1] += 1
+    end
+    for i in 1:n_vars
+        dest.conopt_model.jac_structure.start[i + 1] += dest.conopt_model.jac_structure.start[i]
+    end
+    dest.conopt_model.jac_structure.index = sorted_rows
+
+    # --- Nonlinear Mapping via Hessian ---
+    nonlinear_vars_in_row = [BitSet() for _ in 1:dest.conopt_model.model_data.num_constraints]
+    for r in 1:dest.conopt_model.model_data.num_constraints
+        hess_struct_r = MOI.hessian_constraint_structure(dest.nlp_data.evaluator, r)
+        for (c1, c2) in hess_struct_r
+            push!(nonlinear_vars_in_row[r], c1)
+            push!(nonlinear_vars_in_row[r], c2)
+        end
+    end
+
+    dest.conopt_model.jac_structure.nlflag = zeros(Cint, total_jac_nnz)
+    dest.conopt_model.jac_structure.values = zeros(Float64, total_jac_nnz)
+    dest.conopt_model.eval_cache.row_to_jac_index = [Int[] for _ in 1:dest.conopt_model.model_data.num_constraints]
+
+    for i in 1:total_jac_nnz
+        r = sorted_rows[i] + 1
+        c = sorted_cols[i]
+        if c in nonlinear_vars_in_row[r]
+            dest.conopt_model.jac_structure.nlflag[i] = Cint(1)
+            dest.conopt_model.jac_structure.values[i] = 0.0
+            push!(dest.conopt_model.eval_cache.row_to_jac_index[r], i)
+        else
+            dest.conopt_model.jac_structure.nlflag[i] = Cint(0)
+            dest.conopt_model.jac_structure.values[i] = sorted_jac_vals[i]
+        end
+    end
+
+    # --- Slack Variables ---
+    slack_idx = dest.conopt_model.model_data.num_variables + 1
+    for i in 1:dest.conopt_model.model_data.num_ranged
+        push!(dest.conopt_model.jac_structure.start, dest.conopt_model.jac_structure.start[slack_idx - 1] + 1)
+        push!(dest.conopt_model.jac_structure.index, Cint(ranged_indices[i] - 1))
+        push!(dest.conopt_model.jac_structure.values, 1.0)
+        push!(dest.conopt_model.jac_structure.nlflag, Cint(0))
+        slack_idx += 1
+    end
+
+    # --- Lagrangian Hessian Setup ---
+    raw_hess_str = MOI.hessian_lagrangian_structure(dest.nlp_data.evaluator)
+    p_hess = sortperm(1:length(raw_hess_str), by = i -> (raw_hess_str[i][2], raw_hess_str[i][1]))
+
+    dest.conopt_model.hess_structure.rows = Cint[raw_hess_str[i][1] - 1 for i in p_hess]
+    dest.conopt_model.hess_structure.cols = Cint[raw_hess_str[i][2] - 1 for i in p_hess]
+
+    return
+end
+
+function setup_model(dest::Optimizer, src::MOI.ModelLike)
+    # 1. Variables, Bounds, and Primal Starts
+    _setup_variables!(dest, src)
+
+    # 2. Constraints and Objective
+    ranged_indices = _setup_constraints!(dest, src)
+
+    # 3. Evaluator Initialization
+    _setup_evaluator!(dest)
+
+    # 4. Matrix and Hessian Construction
+    _setup_matrices!(dest, ranged_indices)
+
+    return
+end
+
+
+
+function setup_inner(model::Optimizer)
+    # TODO check if we need to recreate everything
+
+    Conopt.initialize!(model.conopt_model, model.sense == MOI.MAX_SENSE ? 1 : -1)
+end
+
+# this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
+function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
+    # TODO: what we need to get here: matrix of affine terms, obj and conss functions to evaluate, numbers of variables, nonzeroes, etc., Jacobian and Hessian structure, first and second derivative evaluations
+
+    println("optimize! call for moving stuff")
+    #MOI.empty!(dest)
+    index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
+
+    show(src)
+    println("\nmodel: ")
+    show(src.model)
+
+    setup_model(dest, src)
+    setup_inner(dest)
+
+    println("\ncalling solve!")
+
+    result = Conopt.solve!(dest.conopt_model)
+
+    #error("stopping for now, result = ", string(result))
+
+    return index_map, false
+end
+
+###
+### Optimize and post-optimize functions
+###
+
+function MOI.optimize!(model::Optimizer)
+    setup_model(model)
+    #t = time()
+    #model.variable_primal = nothing
+    #model.constraint_primal = nothing
+    #model.Cbc_solve_return_code = Cbc_solve(model)
+    #model.has_solution = _result_count(model)
+    #model.solve_time = time() - t
+    #model.termination_status = _termination_status(model)
+    return
+end
