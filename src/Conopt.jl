@@ -1,7 +1,5 @@
 module Conopt
 
-import MathOptInterface as MOI
-
 function __init__()
     major = Ref{Cint}(0)
     minor = Ref{Cint}(0)
@@ -11,12 +9,15 @@ function __init__()
     return
 end
 
-include("gen/libconopt.jl")
-include("MOI_wrapper/MOI_wrapper.jl")
-using .LibConopt
+include("libconopt.jl")
+include("C_wrapper.jl")
+
+export LibConopt
 
 for sym in filter(s -> startswith("$s", "Conopt_"), names(@__MODULE__, all = true))
     @eval export $sym
 end
+
+global Optimizer
 
 end

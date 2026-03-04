@@ -1,6 +1,6 @@
 module LibConopt
 
-const libconopt = "/home/ksenia/repos/conopt-new/build/install/lib/libconopt.so.4.39.0"
+const libconopt = "/home/maher/Documents/GAMS/Development/conopt/download/conopt-linux-x86_64/lib/libconopt.so"
 
 using CEnum: CEnum, @cenum
 
@@ -88,12 +88,16 @@ function COIGET_RangeErrors(cntvect)
 end
 
 #function COI_Create(cntvect)
-#    ccall((:COI_Create, libconopt), Cint, (Ptr{coiHandle_t},), cntvect)
+    #ccall((:COI_Create, libconopt), Cint, (Ptr{coiHandle_t},), cntvect)
 #end
 
 function COI_Create(cntvect)
     ccall((:COI_Create, libconopt), Cint, (Ptr{Ptr{Cvoid}},), cntvect)
 end
+
+#function COI_Free(cntvect)
+    #ccall((:COI_Free, libconopt), Cint, (Ptr{coiHandle_t},), cntvect)
+#end
 
 function COI_Free(cntvect)
     ccall((:COI_Free, libconopt), Cint, (Ptr{Ptr{Cvoid}},), cntvect)

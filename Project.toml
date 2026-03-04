@@ -1,11 +1,26 @@
 name = "Conopt"
 uuid = "d9ad0738-0ae8-416d-b8ee-a56302d35586"
+version = "0.1.0"
 repo = "TODO"
-version = "TODO"
 
 [deps]
+CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
+
+[weakdeps]
+MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
+
+[extensions]
+ConoptMathOptInterfaceExt = "MathOptInterface"
+
+[compat]
+julia = "1.9"
+CEnum = "0.5.0"
+MathOptInterface = "1.49.0"
+Test = "1.11.0"
 
 [extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
 
 [targets]
-test = ["Test"]
+test = ["Test", "MathOptInterface"]
