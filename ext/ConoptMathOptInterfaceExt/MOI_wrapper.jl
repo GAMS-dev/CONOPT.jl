@@ -8,10 +8,8 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     conopt_model::Conopt.ConoptModel
     timelimit::Real             # time limit in seconds
     name::String                # name of the model
-    params::Dict{String,String} # solver parameters
+    params::Dict{String,Any}    # solver parameters
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
-
-    sense::MOI.OptimizationSense # objective sense
 
     # parameters
     lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded
@@ -25,6 +23,8 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     variable_indices::Vector{MOI.VariableIndex} # list of variable indices
     var_index_to_pos::Dict{MOI.VariableIndex, Int} # positions of variables in CONOPT arrays and variable_indices (1-indexed)
 
+    solve_time::Float64         # stores the solve time
+
     # constructor
     function Optimizer()
         model = new(
@@ -33,7 +33,6 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             "Model",                # model name
             Dict{String,String}(),  # parameters
             0,                      # default number of threads
-            MOI.FEASIBILITY_SENSE,  # objective sense
             1e+15,                  # CONOPT's default Lim_Variable parameter
 
             MOI.Nonlinear.Model(),  # NLP model
@@ -42,6 +41,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 
             MOI.VariableIndex[],        # list of variable indices
             Dict(),                     # positions of variables
+            NaN,
         )
         return model
     end
@@ -73,11 +73,10 @@ end
 
 function MOI.is_empty(model::Optimizer)
     # TODO actually check if the model is empty
-    return isempty(model.params)
+    return Conopt.is_empty(model.conopt_model)
 end
 
 function MOI.empty!(model::Optimizer)
-    # empty the model (TODO: does this also need to free the C problem?)
     empty!(model.params)
 
     # destroying the existing Conopt model, which will call free on the control vector
@@ -98,9 +97,7 @@ end
 ###
 
 # solver name
-function MOI.get(::Optimizer, ::MOI.SolverName)::String
-    return "CONOPT"
-end
+MOI.get(::Optimizer, ::MOI.SolverName) = "Conopt"
 
 # solver version
 function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
@@ -112,10 +109,13 @@ function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
 end
 
 # raw solver
-MOI.get(model::Optimizer, ::MOI.RawSolver) = model.cntvect
+MOI.get(model::Optimizer, ::MOI.RawSolver) = model.conopt_model.cntvect
 
 # model name
+MOI.supports(::Optimizer, ::MOI.Name) = true
+
 MOI.get(model::Optimizer, ::MOI.Name) = model.name
+
 function MOI.set(model::Optimizer, ::MOI.Name, value::String)
     if value == model.name
         return
@@ -123,21 +123,23 @@ function MOI.set(model::Optimizer, ::MOI.Name, value::String)
     model.name = value
     return
 end
-MOI.supports(::Optimizer, ::MOI.Name) = true
 
 # silent
 MOI.supports(::Optimizer, ::MOI.Silent) = true
-function MOI.set(model::Optimizer, ::MOI.Silent, value::Bool)
-    model.silent = value
-    return
-end
+
 MOI.get(model::Optimizer, ::MOI.Silent) = model.silent
 
+function MOI.set(model::Optimizer, ::MOI.Silent, value::Bool)
+    model.conopt_model.silent = value
+    return
+end
+
 # time limit
+# TODO: consider whether this should be moved to ConoptModel
 MOI.supports(::Optimizer, ::MOI.TimeLimitSec) = true
 
 function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, value::Real)
-    if value == model.timelimit
+    if value == mode
         return
     end
     model.timelimit = value
@@ -190,21 +192,17 @@ function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
         end
         model.log_level = Int(value)
     else
-        MOI.set(model, param, string(value))
+        model.params[param.name] = value
     end
 
-
-    return
-end
-
-function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value::String)
-    model.params[param.name] = value
-    # TODO the actual setting of parameters will happen in the Option callback
     return
 end
 
 function MOI.get(model::Optimizer, param::MOI.RawOptimizerAttribute)
-    # TODO handle non-existing parameters
+    if !haskey(model.options, param.name)
+        msg = "RawOptimizerAttribute with name $(param.name) is not already set."
+        throw(MOI.GetAttributeNotAllowed(param, msg))
+    end
     return model.params[param.name]
 end
 
@@ -234,23 +232,6 @@ MOI.get(model::Optimizer, ::MOI.NumberOfThreads) = model.threads
 # gap tolerances not supported by CONOPT
 MOI.supports(::Optimizer, ::MOI.AbsoluteGapTolerance) = false
 MOI.supports(::Optimizer, ::MOI.RelativeGapTolerance) = false
-
-# solve status
-
-function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
-    # TODO return actual status
-    # Need to write a callback that stores the solution status in the
-    # object. Then we will be able to query the solution status here.
-    return MOI.OPTIMIZE_NOT_CALLED
-end
-
-# raw status string explaining why the solver stopped
-MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.conopt_model.raw_status
-
-# solving time in seconds
-MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.conopt_model.solve_time
-
-
 
 ###
 ### indicate which constraints CONOPT supports
@@ -289,6 +270,12 @@ function MOI.supports(
 end
 
 ### starting values of primal variables
+
+function MOI.is_valid(model::Optimizer, vi::MOI.VariableIndex)
+    # The variable is valid if its index is greater than 0 
+    # and less than or equal to the total number of variables.
+    return 1 <= vi.value <= model.conopt_model.model_data.num_variables
+end
 
 function MOI.supports(
     ::Optimizer,
@@ -502,7 +489,7 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
         push!(dest.conopt_model.model_data.constraint_type, 3)
     end
 
-    dest.sense = MOI.get(src, MOI.ObjectiveSense())
+    dest.conopt_model.model_data.sense = Conopt.ObjectiveSense(MOI.get(src, MOI.ObjectiveSense()))
 
     return ranged_indices
 end
@@ -640,7 +627,11 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
 
     println("\ncalling solve!")
 
+    start_time = time()
+
     result = Conopt.solve!(dest.conopt_model)
+
+    dest.solve_time = time() - start_time
 
     #error("stopping for now, result = ", string(result))
 
@@ -662,3 +653,134 @@ function MOI.optimize!(model::Optimizer)
     #model.termination_status = _termination_status(model)
     return
 end
+
+
+### MOI.ResultCount
+
+# Ipopt always has an iterate available.
+function MOI.get(model::Optimizer, ::MOI.ResultCount)
+    if Conopt.is_empty(model.conopt_model)
+        return 0
+    end
+
+    return model.conopt_model.solution_status.stored ? 1 : 0
+end
+
+
+# solve status
+
+function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
+    # this may not actually be true, since it is possible that there is a crash.
+    if !model.conopt_model.solution_status.stored
+        return MOI.OPTIMIZE_NOT_CALLED
+    end
+
+    model_status = model.conopt_model.solution_status.model_status
+    solve_status = model.conopt_model.solution_status.solve_status
+    if solve_status == Conopt.SolveStatus_Normal_Completion
+        if model_status == Conopt.ModelStatus_Optimal
+            return MOI.OPTIMAL
+        elseif model_status == Conopt.ModelStatus_Locally_Optimal
+            return MOI.LOCALLY_SOLVED
+        elseif model_status == Conopt.ModelStatus_Unbounded
+            return MOI.DUAL_INFEASIBLE
+        elseif model_status == Conopt.ModelStatus_Infeasible
+            return MOI.INFEASIBLE_POINT
+        elseif model_status == Conopt.ModelStatus_Locally_Infeasible
+            return MOI.LOCALLY_INFEASIBLE
+        # TODO: there are more model statuses. Need to see if they are needed.
+        end
+    elseif solve_status == Conopt.SolveStatus_Iteration_Interrupt
+        return MOI.ITERATION_LIMIT
+    elseif solve_status == Conopt.SolveStatus_Timelimit
+        return MOI.TIME_LIMIT
+    elseif solve_status == Conopt.SolveStatus_Terminated_Solver
+        return MOI.OTHER_LIMIT
+    elseif solve_status == Conopt.SolveStatus_Evaluation_Error_Limit
+        return MOI.OTHER_LIMIT
+    elseif solve_status == Conopt.SolveStatus_User_Interrupt
+        return MOI.INTERRUPTED
+    elseif solve_status == Conopt.SolveStatus_Error_Setup
+        return MOI.OTHER_ERROR
+    elseif solve_status == Conopt.SolveStatus_Solver_Error_NoPoint
+        return MOI.OTHER_ERROR
+    elseif solve_status == Conopt.SolveStatus_Solver_Error_Point
+        return MOI.OTHER_ERROR
+    elseif solve_status == Conopt.SolveStatus_General_System_Error
+        return MOI.OTHER_ERROR
+    elseif solve_status == Conopt.SolveStatus_Terminated_Quick_Mode
+        return MOI.OTHER_LIMIT
+    end
+    return MOI.OPTIMIZE_NOT_CALLED
+end
+
+# raw status string explaining why the solver stopped
+MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.conopt_model.raw_status
+
+# solving time in seconds
+MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solve_time
+
+# the primal status - the status of the primal solution
+function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
+    MOI.check_result_index_bounds(model, attr)
+
+    model_status = model.conopt_model.solution_status.model_status
+    if model_status == Conopt.ModelStatus_Optimal ||
+        model_status == Conopt.ModelStatus_Locally_Optimal
+        return MOI.FEASIBLE_POINT
+    elseif model_status == Conopt.ModelStatus_Infeasible ||
+        model_status == Conopt.ModelStatus_Locally_Infeasible ||
+        model_status == Conopt.ModelStatus_Intermediate_Infeasible
+        return MOI.INFEASIBLE_POINT
+    end
+
+    return MOI.UNKNOWN_RESULT_STATUS
+end
+
+
+# the dual status - the status of the dual solution
+# NOTE: this is currently being taken from the model status. However, we could infer this result
+# from the dual solution.
+function MOI.get(model::Optimizer, attr::MOI.DualStatus)
+    MOI.check_result_index_bounds(model, attr)
+
+    model_status = model.conopt_model.solution_status.model_status
+    if model_status == Conopt.ModelStatus_Optimal ||
+        model_status == Conopt.ModelStatus_Locally_Optimal
+        return MOI.FEASIBLE_POINT
+    elseif model_status == Conopt.ModelStatus_Unbounded
+        return MOI.NO_SOLUTION
+    end
+
+    return MOI.UNKNOWN_RESULT_STATUS
+end
+
+### MOI.BarrierIterations
+# NOTE: Conopt does perform the Barrier algorithm, so this is the iterations for the GRG algorithm.
+
+MOI.get(model::Optimizer, ::MOI.BarrierIterations) = model.conopt_model.solution_status.iterations
+
+### MOI.ObjectiveValue
+
+function MOI.get(model::Optimizer, attr::MOI.ObjectiveValue)
+    MOI.check_result_index_bounds(model, attr)
+
+    return model.conopt_model.solution_status.objective
+end
+
+### MOI.VariablePrimal
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.VariablePrimal,
+    vi::MOI.VariableIndex,
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, vi)
+    if _is_parameter(vi)
+        p = model.parameters[vi]
+        return model.nlp_model[p]
+    end
+    return model.inner.x[Ipopt.column(vi)]
+end
+

@@ -1,5 +1,11 @@
 
 #!format:off
+@enum ObjectiveSense begin
+    ObjSense_Maximize       = -1
+    ObjSense_Feasibility    = 0
+    ObjSense_Minimize       = 1
+end
+
 @enum VerbosityLevel begin
     VerbLevel_None                        = 1
     VerbLevel_Normal                      = 2
@@ -52,6 +58,7 @@ mutable struct ModelData
     constraint_type::Vector{Cint}       # the constraint type 0: equality, 1: geq, 2: leq, 3, free
 
     objective_row_index::Int    # the index for the objective row. TODO: handle the case when the objective is a variable.
+    sense::Int      # the objective sense, 1 is minimize and -
 
     keep::Bool                  # should the data be kept after being read by Conopt
 
@@ -66,6 +73,7 @@ mutable struct ModelData
             Float64[],                  # constraint rhs
             Cint[],
             -1,                         # the objective row index
+            ObjSense_Feasibility,       # the objective sense
             false
             )
     end
@@ -132,12 +140,10 @@ mutable struct SolutionStatus
     raw_status::String               # string explaining why the solver stopped
     model_status::ModelStatus       # the model status reported by Conopt
     solve_status::SolveStatus       # the solution status reported by Conopt
-    solve_time::Float64              # solving time in seconds
     iterations::Int                 # the number of iterations performed
     objective::Float64              # the final objective value
 
-    solution_stored::Bool           # set to True is the solution data has been stored
-    status_stored::Bool             # set to True is the status data has been stored
+    stored::Bool                    # set to True is the solution and status data has been stored
     function SolutionStatus()
         return new(
             Float64[],
@@ -152,9 +158,8 @@ mutable struct SolutionStatus
             ModelStatus_Unknown,
             SolveStatus_Unknown,
             0.0,
-            0,
+            NaN,
             0.0,
-            false,
             false
             )
     end
@@ -241,6 +246,9 @@ function _free_control_vector!(model::ConoptModel)
     end
 end
 
+function is_empty(model::ConoptModel)
+    return model.cntvect[] == C_NULL
+end
 
 function initialize!(model::ConoptModel, sense::Int)
     if model.cntvect[] == C_NULL
@@ -266,10 +274,7 @@ function initialize!(model::ConoptModel, sense::Int)
     coierror += LibConopt.COIDEF_NumHess(ptr, length(model.hess_structure.cols))
 
     # objective information
-    if sense != 1 && sense != -1
-        error("the objective sense must be either 1 or -1")
-    end
-    coierror += LibConopt.COIDEF_OptDir(ptr, sense)
+    coierror += LibConopt.COIDEF_OptDir(ptr, Int(model.model_data.sense))
 
     # in model.nlp_model, we store objective as the last constraint, hence use ObjCon (not ObjVar) here
     coierror += LibConopt.COIDEF_ObjCon(ptr, model.model_data.objective_row_index - 1)
@@ -365,7 +370,6 @@ function _Status_cb(modsta, solsta, iter, objval, usrmem)::Cint
    model.solution_status.objective = objval
 
    model.solution_status.raw_status = "CONOPT stopped"
-   model.solution_status.solve_time = 10
 
    model.solution_status.status_stored = true;
 
