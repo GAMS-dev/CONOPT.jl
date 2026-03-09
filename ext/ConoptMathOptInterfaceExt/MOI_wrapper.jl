@@ -5,7 +5,7 @@
 const CONOPT_INF = 1e15
 
 mutable struct Optimizer <: MOI.AbstractOptimizer
-    conopt_model::Conopt.ConoptModel
+    inner::Conopt.ConoptModel
     timelimit::Real             # time limit in seconds
     name::String                # name of the model
     params::Dict{String,Any}    # solver parameters
@@ -68,19 +68,19 @@ const _FUNCTIONS = Union{
 ###
 
 function Base.summary(io::IO, model::Optimizer)
-    return print(io, "CONOPT solver with the control vector pointer $(model.conopt_model.cntvect)")
+    return print(io, "CONOPT solver with the control vector pointer $(model.inner.cntvect)")
 end
 
 function MOI.is_empty(model::Optimizer)
     # TODO actually check if the model is empty
-    return Conopt.is_empty(model.conopt_model)
+    return Conopt.is_empty(model.inner)
 end
 
 function MOI.empty!(model::Optimizer)
     empty!(model.params)
 
     # destroying the existing Conopt model, which will call free on the control vector
-    model.conopt_model = Conopt.ConoptModel()
+    model.inner = Conopt.ConoptModel()
 
     model.nlp_model = MOI.Nonlinear.Model()
     model.nlp_data = MOI.NLPBlockData([], _EmptyNLPEvaluator(), false)
@@ -109,7 +109,7 @@ function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
 end
 
 # raw solver
-MOI.get(model::Optimizer, ::MOI.RawSolver) = model.conopt_model.cntvect
+MOI.get(model::Optimizer, ::MOI.RawSolver) = model.inner.cntvect
 
 # model name
 MOI.supports(::Optimizer, ::MOI.Name) = true
@@ -130,7 +130,7 @@ MOI.supports(::Optimizer, ::MOI.Silent) = true
 MOI.get(model::Optimizer, ::MOI.Silent) = model.silent
 
 function MOI.set(model::Optimizer, ::MOI.Silent, value::Bool)
-    model.conopt_model.silent = value
+    model.inner.silent = value
     return
 end
 
@@ -272,9 +272,9 @@ end
 ### starting values of primal variables
 
 function MOI.is_valid(model::Optimizer, vi::MOI.VariableIndex)
-    # The variable is valid if its index is greater than 0 
+    # The variable is valid if its index is greater than 0
     # and less than or equal to the total number of variables.
-    return 1 <= vi.value <= model.conopt_model.model_data.num_variables
+    return 1 <= vi.value <= model.inner.model_data.num_variables
 end
 
 function MOI.supports(
@@ -294,7 +294,7 @@ function MOI.get(
         throw(MOI.GetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    return model.conopt_model.model_data.variable_primal_start[model.var_index_to_pos[vi]]
+    return model.inner.model_data.variable_primal_start[model.var_index_to_pos[vi]]
 end
 
 function MOI.set(
@@ -307,7 +307,7 @@ function MOI.set(
         throw(MOI.SetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    model.conopt_model.model_data.variable_primal_start[model.var_index_to_pos[vi]] = value
+    model.inner.model_data.variable_primal_start[model.var_index_to_pos[vi]] = value
     return
 end
 
@@ -364,20 +364,20 @@ end
 function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
     dest.variable_indices = MOI.get(src, MOI.ListOfVariableIndices())
     n_vars = length(dest.variable_indices)
-    dest.conopt_model.model_data.num_variables = n_vars
+    dest.inner.model_data.num_variables = n_vars
 
-    dest.conopt_model.model_data.variable_primal_start = zeros(Float64, n_vars)
-    dest.conopt_model.model_data.variable_lower = fill(-CONOPT_INF, n_vars)
-    dest.conopt_model.model_data.variable_upper = fill(CONOPT_INF, n_vars)
+    dest.inner.model_data.variable_primal_start = zeros(Float64, n_vars)
+    dest.inner.model_data.variable_lower = fill(-CONOPT_INF, n_vars)
+    dest.inner.model_data.variable_upper = fill(CONOPT_INF, n_vars)
 
     for (i, vi) in enumerate(dest.variable_indices)
         dest.var_index_to_pos[vi] = i
 
         start_val = MOI.get(src, MOI.VariablePrimalStart(), vi)
         if start_val !== nothing
-            dest.conopt_model.model_data.variable_primal_start[i] = start_val
+            dest.inner.model_data.variable_primal_start[i] = start_val
         else
-            dest.conopt_model.model_data.variable_primal_start[i] = 0.0
+            dest.inner.model_data.variable_primal_start[i] = 0.0
         end
     end
     return
@@ -412,11 +412,11 @@ end
 """
 function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
     ranged_indices = Vector{Int}()
-    dest.conopt_model.model_data.num_constraints = 0
-    dest.conopt_model.model_data.num_ranged = 0
+    dest.inner.model_data.num_constraints = 0
+    dest.inner.model_data.num_ranged = 0
 
-    dest.conopt_model.model_data.constraint_rhs = Float64[]
-    dest.conopt_model.model_data.constraint_type = Cint[]
+    dest.inner.model_data.constraint_rhs = Float64[]
+    dest.inner.model_data.constraint_type = Cint[]
 
     for f in Base.uniontypes(_FUNCTIONS)
         for set in Base.uniontypes(_SETS)
@@ -433,35 +433,35 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
                     v_idx = dest.var_index_to_pos[cons_function]
 
                     if set <: MOI.GreaterThan
-                        _update_variable_bounds(dest.conopt_model.model_data, v_idx, lower=MOI.constant(cons_set))
+                        _update_variable_bounds(dest.inner.model_data, v_idx, lower=MOI.constant(cons_set))
                     elseif set <: MOI.LessThan
-                        _update_variable_bounds(dest.conopt_model.model_data, v_idx, upper=MOI.constant(cons_set))
+                        _update_variable_bounds(dest.inner.model_data, v_idx, upper=MOI.constant(cons_set))
                     elseif set <: MOI.EqualTo
-                        _update_variable_bounds(dest.conopt_model.model_data, v_idx, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
+                        _update_variable_bounds(dest.inner.model_data, v_idx, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
                     elseif set <: MOI.Interval
-                        _update_variable_bounds(dest.conopt_model.model_data, v_idx, lower=cons_set.lower, upper=cons_set.upper)
+                        _update_variable_bounds(dest.inner.model_data, v_idx, lower=cons_set.lower, upper=cons_set.upper)
                     end
                 else
-                    dest.conopt_model.model_data.num_constraints += 1
+                    dest.inner.model_data.num_constraints += 1
 
                     if set <: MOI.GreaterThan
-                        push!(dest.conopt_model.model_data.constraint_rhs, MOI.constant(cons_set))
-                        push!(dest.conopt_model.model_data.constraint_type, 1)
+                        push!(dest.inner.model_data.constraint_rhs, MOI.constant(cons_set))
+                        push!(dest.inner.model_data.constraint_type, 1)
                     elseif set <: MOI.LessThan
-                        push!(dest.conopt_model.model_data.constraint_rhs, MOI.constant(cons_set))
-                        push!(dest.conopt_model.model_data.constraint_type, 2)
+                        push!(dest.inner.model_data.constraint_rhs, MOI.constant(cons_set))
+                        push!(dest.inner.model_data.constraint_type, 2)
                     elseif set <: MOI.EqualTo
-                        push!(dest.conopt_model.model_data.constraint_rhs, MOI.constant(cons_set))
-                        push!(dest.conopt_model.model_data.constraint_type, 0)
+                        push!(dest.inner.model_data.constraint_rhs, MOI.constant(cons_set))
+                        push!(dest.inner.model_data.constraint_type, 0)
                     elseif set <: MOI.Interval
-                        dest.conopt_model.model_data.num_ranged += 1
-                        push!(ranged_indices, dest.conopt_model.model_data.num_constraints)
-                        push!(dest.conopt_model.model_data.constraint_rhs, 0.0)
-                        push!(dest.conopt_model.model_data.constraint_type, 0)
+                        dest.inner.model_data.num_ranged += 1
+                        push!(ranged_indices, dest.inner.model_data.num_constraints)
+                        push!(dest.inner.model_data.constraint_rhs, 0.0)
+                        push!(dest.inner.model_data.constraint_type, 0)
 
-                        push!(dest.conopt_model.model_data.variable_lower, cons_set.lower)
-                        push!(dest.conopt_model.model_data.variable_upper, cons_set.upper)
-                        push!(dest.conopt_model.model_data.variable_primal_start, clamp(0.0, cons_set.lower, cons_set.upper))
+                        push!(dest.inner.model_data.variable_lower, cons_set.lower)
+                        push!(dest.inner.model_data.variable_upper, cons_set.upper)
+                        push!(dest.inner.model_data.variable_primal_start, clamp(0.0, cons_set.lower, cons_set.upper))
                     end
 
                     MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
@@ -483,13 +483,13 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
         obj = MOI.get(src, obj_attr)
         MOI.Nonlinear.add_constraint(dest.nlp_model, obj, MOI.Interval(-CONOPT_INF, CONOPT_INF))
 
-        dest.conopt_model.model_data.num_constraints += 1
-        dest.conopt_model.model_data.objective_row_index = dest.conopt_model.model_data.num_constraints
-        push!(dest.conopt_model.model_data.constraint_rhs, -obj.constant)
-        push!(dest.conopt_model.model_data.constraint_type, 3)
+        dest.inner.model_data.num_constraints += 1
+        dest.inner.model_data.objective_row_index = dest.inner.model_data.num_constraints
+        push!(dest.inner.model_data.constraint_rhs, -obj.constant)
+        push!(dest.inner.model_data.constraint_type, 3)
     end
 
-    dest.conopt_model.model_data.sense = Conopt.ObjectiveSense(MOI.get(src, MOI.ObjectiveSense()))
+    dest.inner.model_data.sense = Conopt.ObjectiveSense(MOI.get(src, MOI.ObjectiveSense()))
 
     return ranged_indices
 end
@@ -516,32 +516,32 @@ end
     setup up the jacobian and hessian matrices in a form that can be supplied to Conopt
 """
 function _setup_matrices!(dest::Optimizer, ranged_indices::Vector{Int})
-    n_vars = dest.conopt_model.model_data.num_variables
+    n_vars = dest.inner.model_data.num_variables
 
     # --- Jacobian Extraction and Setup ---
     raw_jac_str = MOI.jacobian_structure(dest.nlp_data.evaluator)
     total_jac_nnz = length(raw_jac_str)
 
     jac_vals = zeros(total_jac_nnz)
-    MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, jac_vals, dest.conopt_model.model_data.variable_primal_start)
+    MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, jac_vals, dest.inner.model_data.variable_primal_start)
 
     p_jac = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][2], raw_jac_str[i][1]))
     sorted_rows = Cint[raw_jac_str[i][1] - 1 for i in p_jac]
     sorted_cols = Int[raw_jac_str[i][2] for i in p_jac]
     sorted_jac_vals = jac_vals[p_jac]
 
-    dest.conopt_model.jac_structure.start = zeros(Cint, n_vars + 1)
+    dest.inner.jac_structure.start = zeros(Cint, n_vars + 1)
     for c in sorted_cols
-        dest.conopt_model.jac_structure.start[c + 1] += 1
+        dest.inner.jac_structure.start[c + 1] += 1
     end
     for i in 1:n_vars
-        dest.conopt_model.jac_structure.start[i + 1] += dest.conopt_model.jac_structure.start[i]
+        dest.inner.jac_structure.start[i + 1] += dest.inner.jac_structure.start[i]
     end
-    dest.conopt_model.jac_structure.index = sorted_rows
+    dest.inner.jac_structure.index = sorted_rows
 
     # --- Nonlinear Mapping via Hessian ---
-    nonlinear_vars_in_row = [BitSet() for _ in 1:dest.conopt_model.model_data.num_constraints]
-    for r in 1:dest.conopt_model.model_data.num_constraints
+    nonlinear_vars_in_row = [BitSet() for _ in 1:dest.inner.model_data.num_constraints]
+    for r in 1:dest.inner.model_data.num_constraints
         hess_struct_r = MOI.hessian_constraint_structure(dest.nlp_data.evaluator, r)
         for (c1, c2) in hess_struct_r
             push!(nonlinear_vars_in_row[r], c1)
@@ -549,30 +549,30 @@ function _setup_matrices!(dest::Optimizer, ranged_indices::Vector{Int})
         end
     end
 
-    dest.conopt_model.jac_structure.nlflag = zeros(Cint, total_jac_nnz)
-    dest.conopt_model.jac_structure.values = zeros(Float64, total_jac_nnz)
-    dest.conopt_model.eval_cache.row_to_jac_index = [Int[] for _ in 1:dest.conopt_model.model_data.num_constraints]
+    dest.inner.jac_structure.nlflag = zeros(Cint, total_jac_nnz)
+    dest.inner.jac_structure.values = zeros(Float64, total_jac_nnz)
+    dest.inner.eval_cache.row_to_jac_index = [Int[] for _ in 1:dest.inner.model_data.num_constraints]
 
     for i in 1:total_jac_nnz
         r = sorted_rows[i] + 1
         c = sorted_cols[i]
         if c in nonlinear_vars_in_row[r]
-            dest.conopt_model.jac_structure.nlflag[i] = Cint(1)
-            dest.conopt_model.jac_structure.values[i] = 0.0
-            push!(dest.conopt_model.eval_cache.row_to_jac_index[r], i)
+            dest.inner.jac_structure.nlflag[i] = Cint(1)
+            dest.inner.jac_structure.values[i] = 0.0
+            push!(dest.inner.eval_cache.row_to_jac_index[r], i)
         else
-            dest.conopt_model.jac_structure.nlflag[i] = Cint(0)
-            dest.conopt_model.jac_structure.values[i] = sorted_jac_vals[i]
+            dest.inner.jac_structure.nlflag[i] = Cint(0)
+            dest.inner.jac_structure.values[i] = sorted_jac_vals[i]
         end
     end
 
     # --- Slack Variables ---
-    slack_idx = dest.conopt_model.model_data.num_variables + 1
-    for i in 1:dest.conopt_model.model_data.num_ranged
-        push!(dest.conopt_model.jac_structure.start, dest.conopt_model.jac_structure.start[slack_idx - 1] + 1)
-        push!(dest.conopt_model.jac_structure.index, Cint(ranged_indices[i] - 1))
-        push!(dest.conopt_model.jac_structure.values, 1.0)
-        push!(dest.conopt_model.jac_structure.nlflag, Cint(0))
+    slack_idx = dest.inner.model_data.num_variables + 1
+    for i in 1:dest.inner.model_data.num_ranged
+        push!(dest.inner.jac_structure.start, dest.inner.jac_structure.start[slack_idx - 1] + 1)
+        push!(dest.inner.jac_structure.index, Cint(ranged_indices[i] - 1))
+        push!(dest.inner.jac_structure.values, 1.0)
+        push!(dest.inner.jac_structure.nlflag, Cint(0))
         slack_idx += 1
     end
 
@@ -580,8 +580,8 @@ function _setup_matrices!(dest::Optimizer, ranged_indices::Vector{Int})
     raw_hess_str = MOI.hessian_lagrangian_structure(dest.nlp_data.evaluator)
     p_hess = sortperm(1:length(raw_hess_str), by = i -> (raw_hess_str[i][2], raw_hess_str[i][1]))
 
-    dest.conopt_model.hess_structure.rows = Cint[raw_hess_str[i][1] - 1 for i in p_hess]
-    dest.conopt_model.hess_structure.cols = Cint[raw_hess_str[i][2] - 1 for i in p_hess]
+    dest.inner.hess_structure.rows = Cint[raw_hess_str[i][1] - 1 for i in p_hess]
+    dest.inner.hess_structure.cols = Cint[raw_hess_str[i][2] - 1 for i in p_hess]
 
     return
 end
@@ -607,7 +607,7 @@ end
 function setup_inner(model::Optimizer)
     # TODO check if we need to recreate everything
 
-    Conopt.initialize!(model.conopt_model, model.sense == MOI.MAX_SENSE ? 1 : -1)
+    Conopt.initialize!(model.inner, model.sense == MOI.MAX_SENSE ? 1 : -1)
 end
 
 # this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
@@ -629,7 +629,7 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
 
     start_time = time()
 
-    result = Conopt.solve!(dest.conopt_model)
+    result = Conopt.solve!(dest.inner)
 
     dest.solve_time = time() - start_time
 
@@ -659,11 +659,11 @@ end
 
 # Ipopt always has an iterate available.
 function MOI.get(model::Optimizer, ::MOI.ResultCount)
-    if Conopt.is_empty(model.conopt_model)
+    if Conopt.is_empty(model.inner)
         return 0
     end
 
-    return model.conopt_model.solution_status.stored ? 1 : 0
+    return model.inner.solution_status.stored ? 1 : 0
 end
 
 
@@ -671,12 +671,12 @@ end
 
 function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
     # this may not actually be true, since it is possible that there is a crash.
-    if !model.conopt_model.solution_status.stored
+    if !model.inner.solution_status.stored
         return MOI.OPTIMIZE_NOT_CALLED
     end
 
-    model_status = model.conopt_model.solution_status.model_status
-    solve_status = model.conopt_model.solution_status.solve_status
+    model_status = model.inner.solution_status.model_status
+    solve_status = model.inner.solution_status.solve_status
     if solve_status == Conopt.SolveStatus_Normal_Completion
         if model_status == Conopt.ModelStatus_Optimal
             return MOI.OPTIMAL
@@ -715,7 +715,7 @@ function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
 end
 
 # raw status string explaining why the solver stopped
-MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.conopt_model.raw_status
+MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.inner.raw_status
 
 # solving time in seconds
 MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solve_time
@@ -724,7 +724,7 @@ MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solve_time
 function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
     MOI.check_result_index_bounds(model, attr)
 
-    model_status = model.conopt_model.solution_status.model_status
+    model_status = model.inner.solution_status.model_status
     if model_status == Conopt.ModelStatus_Optimal ||
         model_status == Conopt.ModelStatus_Locally_Optimal
         return MOI.FEASIBLE_POINT
@@ -744,7 +744,7 @@ end
 function MOI.get(model::Optimizer, attr::MOI.DualStatus)
     MOI.check_result_index_bounds(model, attr)
 
-    model_status = model.conopt_model.solution_status.model_status
+    model_status = model.inner.solution_status.model_status
     if model_status == Conopt.ModelStatus_Optimal ||
         model_status == Conopt.ModelStatus_Locally_Optimal
         return MOI.FEASIBLE_POINT
@@ -758,14 +758,14 @@ end
 ### MOI.BarrierIterations
 # NOTE: Conopt does perform the Barrier algorithm, so this is the iterations for the GRG algorithm.
 
-MOI.get(model::Optimizer, ::MOI.BarrierIterations) = model.conopt_model.solution_status.iterations
+MOI.get(model::Optimizer, ::MOI.BarrierIterations) = model.inner.solution_status.iterations
 
 ### MOI.ObjectiveValue
 
 function MOI.get(model::Optimizer, attr::MOI.ObjectiveValue)
     MOI.check_result_index_bounds(model, attr)
 
-    return model.conopt_model.solution_status.objective
+    return model.inner.solution_status.objective
 end
 
 ### MOI.VariablePrimal
