@@ -21,7 +21,6 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 
     # variable mapping MOI to Conopt
     variable_indices::Vector{MOI.VariableIndex} # list of variable indices
-    var_index_to_pos::Dict{MOI.VariableIndex, Int} # positions of variables in CONOPT arrays and variable_indices (1-indexed)
 
     solve_time::Float64         # stores the solve time
 
@@ -40,7 +39,6 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             MOI.Nonlinear.SparseReverseMode(), # automatic differentiation
 
             MOI.VariableIndex[],        # list of variable indices
-            Dict(),                     # positions of variables
             NaN,
         )
         return model
@@ -86,7 +84,6 @@ function MOI.empty!(model::Optimizer)
     model.nlp_data = MOI.NLPBlockData([], _EmptyNLPEvaluator(), false)
 
     empty!(model.variable_indices)
-    empty!(model.var_index_to_pos)
     return
 end
 
@@ -255,6 +252,13 @@ function MOI.supports_constraint(
     return true
 end
 
+function MOI.supports_constraint(
+    ::Optimizer,
+    ::Type{MOI.VariableIndex},
+    ::Type{MOI.Interval{Float64}}
+)
+    return true
+end
 
 
 function MOI.supports(
@@ -269,12 +273,21 @@ function MOI.supports(
     return true
 end
 
+_column(vi::MOI.VariableIndex) = vi.value
+_row(ci::MOI.ConstraintIndex) = ci.value
+
 ### starting values of primal variables
 
 function MOI.is_valid(model::Optimizer, vi::MOI.VariableIndex)
     # The variable is valid if its index is greater than 0
     # and less than or equal to the total number of variables.
     return 1 <= vi.value <= model.inner.model_data.num_variables
+end
+
+function MOI.is_valid(model::Optimizer, ci::MOI.ConstraintIndex)
+    # The variable is valid if its index is greater than 0
+    # and less than or equal to the total number of variables.
+    return 1 <= ci.value <= model.inner.model_data.num_constraints
 end
 
 function MOI.supports(
@@ -294,7 +307,7 @@ function MOI.get(
         throw(MOI.GetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    return model.inner.model_data.variable_primal_start[model.var_index_to_pos[vi]]
+    return model.inner.model_data.variable_primal_start[vi.value]
 end
 
 function MOI.set(
@@ -307,7 +320,7 @@ function MOI.set(
         throw(MOI.SetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    model.inner.model_data.variable_primal_start[model.var_index_to_pos[vi]] = value
+    model.inner.model_data.variable_primal_start[vi.value] = value
     return
 end
 
@@ -370,14 +383,14 @@ function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
     dest.inner.model_data.variable_lower = fill(-CONOPT_INF, n_vars)
     dest.inner.model_data.variable_upper = fill(CONOPT_INF, n_vars)
 
-    for (i, vi) in enumerate(dest.variable_indices)
-        dest.var_index_to_pos[vi] = i
+    for v in dest.variable_indices
+        index = v.value
 
-        start_val = MOI.get(src, MOI.VariablePrimalStart(), vi)
+        start_val = MOI.get(src, MOI.VariablePrimalStart(), v)
         if start_val !== nothing
-            dest.inner.model_data.variable_primal_start[i] = start_val
+            dest.inner.model_data.variable_primal_start[index] = start_val
         else
-            dest.inner.model_data.variable_primal_start[i] = 0.0
+            dest.inner.model_data.variable_primal_start[index] = 0.0
         end
     end
     return
@@ -403,6 +416,18 @@ function _get_objective_constant(model::Optimizer)::Float64
     #end
 end
 
+
+function _set_objective_sense!(model::Optimizer, sense::MOI.OptimizationSense)
+    if sense == MOI.MIN_SENSE
+        model.inner.model_data.sense = Conopt.ObjSense_Minimize
+    elseif sense == MOI.MAX_SENSE
+        model.inner.model_data.sense = Conopt.ObjSense_Maximize
+    elseif sense == MOI.FEASIBILITY_SENSE
+        model.inner.model_data.sense = Conopt.ObjSense_Feasibility
+    else
+        error("Unknown objective sense: $sense")
+    end
+end
 
 """
     function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
@@ -430,16 +455,17 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
                 cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
 
                 if f == MOI.VariableIndex
-                    v_idx = dest.var_index_to_pos[cons_function]
+                    index = cons_function.value
 
                     if set <: MOI.GreaterThan
-                        _update_variable_bounds(dest.inner.model_data, v_idx, lower=MOI.constant(cons_set))
+                        _update_variable_bounds(dest.inner.model_data, index, lower=MOI.constant(cons_set))
                     elseif set <: MOI.LessThan
-                        _update_variable_bounds(dest.inner.model_data, v_idx, upper=MOI.constant(cons_set))
+                        _update_variable_bounds(dest.inner.model_data, index, upper=MOI.constant(cons_set))
                     elseif set <: MOI.EqualTo
-                        _update_variable_bounds(dest.inner.model_data, v_idx, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
+                        _update_variable_bounds(dest.inner.model_data, index, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
                     elseif set <: MOI.Interval
-                        _update_variable_bounds(dest.inner.model_data, v_idx, lower=cons_set.lower, upper=cons_set.upper)
+                        println("Interval")
+                        _update_variable_bounds(dest.inner.model_data, index, lower=cons_set.lower, upper=cons_set.upper)
                     end
                 else
                     dest.inner.model_data.num_constraints += 1
@@ -460,7 +486,7 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
                         push!(dest.inner.model_data.constraint_type, 0)
 
                         push!(dest.inner.model_data.variable_lower, cons_set.lower)
-                        push!(dest.inner.model_data.variable_upper, cons_set.upper)
+    push!(dest.inner.model_data.variable_upper, cons_set.upper)
                         push!(dest.inner.model_data.variable_primal_start, clamp(0.0, cons_set.lower, cons_set.upper))
                     end
 
@@ -489,7 +515,8 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
         push!(dest.inner.model_data.constraint_type, 3)
     end
 
-    dest.inner.model_data.sense = Conopt.ObjectiveSense(MOI.get(src, MOI.ObjectiveSense()))
+    # setting the objective sense in the Conopt model data
+    _set_objective_sense!(dest, MOI.get(src, MOI.ObjectiveSense()))
 
     return ranged_indices
 end
@@ -607,7 +634,7 @@ end
 function setup_inner(model::Optimizer)
     # TODO check if we need to recreate everything
 
-    Conopt.initialize!(model.inner, model.sense == MOI.MAX_SENSE ? 1 : -1)
+    Conopt.initialize!(model.inner)
 end
 
 # this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
@@ -663,7 +690,7 @@ function MOI.get(model::Optimizer, ::MOI.ResultCount)
         return 0
     end
 
-    return model.inner.solution_status.stored ? 1 : 0
+    return model.inner.solution_status.status_stored ? 1 : 0
 end
 
 
@@ -671,7 +698,7 @@ end
 
 function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
     # this may not actually be true, since it is possible that there is a crash.
-    if !model.inner.solution_status.stored
+    if !model.inner.solution_status.status_stored
         return MOI.OPTIMIZE_NOT_CALLED
     end
 
@@ -777,10 +804,113 @@ function MOI.get(
 )
     MOI.check_result_index_bounds(model, attr)
     MOI.throw_if_not_valid(model, vi)
-    if _is_parameter(vi)
-        p = model.parameters[vi]
-        return model.nlp_model[p]
-    end
-    return model.inner.x[Ipopt.column(vi)]
+    return model.inner.solution_status.x_value[_column(vi)]
 end
 
+
+### MOI.ConstraintPrimal
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintPrimal,
+    ci::MOI.ConstraintIndex{F,<:_SETS},
+) where {
+    F<:Union{
+        MOI.ScalarAffineFunction{Float64},
+        MOI.ScalarQuadraticFunction{Float64},
+        MOI.ScalarNonlinearFunction,
+    },
+}
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    return model.inner.solution_status.y_value[_row(ci)]
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintPrimal,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,<:_SETS},
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    return model.inner.solution_status.x_value[ci.value]
+end
+
+### MOI.ConstraintDual
+
+_dual_multiplier(model::Optimizer) = model.inner.model_data.sense == Conopt.ObjSense_Minimize ? 1.0 : -1.0
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{F,<:_SETS},
+) where {
+    F<:Union{
+        MOI.ScalarAffineFunction{Float64},
+        MOI.ScalarQuadraticFunction{Float64},
+        MOI.ScalarNonlinearFunction,
+    },
+}
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    s = _dual_multiplier(model)
+    return s * model.inner.solution_status.y_marginal[_row(ci)]
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.LessThan{Float64}},
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    if model.inner.solution_status.x_basis[ci.value] == 1
+        rc = model.inner.solution_status.x_marginal[ci.value]
+    else
+        rc = 0
+    end
+    return min(0.0, _dual_multiplier(model) * rc)
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.GreaterThan{Float64}},
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    if model.inner.solution_status.x_basis[ci.value] == 0
+        rc = -model.inner.solution_status.x_marginal[ci.value]
+    else
+        rc = 0
+    end
+    return max(0.0, _dual_multiplier(model) * rc)
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.EqualTo{Float64}},
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    rc = model.inner.solution_status.x_marginal[ci.value]
+    return _dual_multiplier(model) * rc
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.Interval{Float64}},
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    if model.inner.solution_status.x_basis[ci.value] == 0 # on the lower bound
+        rc = -model.inner.solution_status.x_marginal[ci.value]
+    elseif model.inner.solution_status.x_basis[ci.value] == 1 # on the upper bound
+        rc = model.inner.solution_status.x_marginal[ci.value]
+    else
+        rc = 0
+    end
+    return _dual_multiplier(model) * rc
+end

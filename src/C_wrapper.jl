@@ -1,9 +1,9 @@
 
 #!format:off
 @enum ObjectiveSense begin
-    ObjSense_Maximize       = -1
+    ObjSense_Minimize       = -1
     ObjSense_Feasibility    = 0
-    ObjSense_Minimize       = 1
+    ObjSense_Maximize       = 1
 end
 
 @enum VerbosityLevel begin
@@ -58,7 +58,7 @@ mutable struct ModelData
     constraint_type::Vector{Cint}       # the constraint type 0: equality, 1: geq, 2: leq, 3, free
 
     objective_row_index::Int    # the index for the objective row. TODO: handle the case when the objective is a variable.
-    sense::Int      # the objective sense, 1 is minimize and -
+    sense::ObjectiveSense       # the objective sense, 1 is minimize and -
 
     keep::Bool                  # should the data be kept after being read by Conopt
 
@@ -143,7 +143,8 @@ mutable struct SolutionStatus
     iterations::Int                 # the number of iterations performed
     objective::Float64              # the final objective value
 
-    stored::Bool                    # set to True is the solution and status data has been stored
+    solution_stored::Bool           # set to True is the solution data has been stored
+    status_stored::Bool             # set to True is the status data has been stored
     function SolutionStatus()
         return new(
             Float64[],
@@ -157,9 +158,9 @@ mutable struct SolutionStatus
             "unknown",
             ModelStatus_Unknown,
             SolveStatus_Unknown,
-            0.0,
+            0,
             NaN,
-            0.0,
+            false,
             false
             )
     end
@@ -247,10 +248,11 @@ function _free_control_vector!(model::ConoptModel)
 end
 
 function is_empty(model::ConoptModel)
-    return model.cntvect[] == C_NULL
+    return model.model_data.num_variables == 0 &&
+        model.model_data.num_constraints == 0
 end
 
-function initialize!(model::ConoptModel, sense::Int)
+function initialize!(model::ConoptModel)
     if model.cntvect[] == C_NULL
         error("the Conopt control vector has not bee initialized")
     end
@@ -405,6 +407,8 @@ function _Solution_cb(xval, xmar, xbas, xsta, yval, ymar, ybas, ysta, numvar, nu
 
    ysta_view = unsafe_wrap(Array, ysta, numcon; own=false)
    solution.y_status = copy(ysta_view)
+
+   model.solution_status.solution_stored = true
 
    return Cint(0)
 end
