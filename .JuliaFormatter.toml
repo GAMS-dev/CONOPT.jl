@@ -1,8 +1,16 @@
 # Configuration file for JuliaFormatter.jl
 # For more information, see: https://domluna.github.io/JuliaFormatter.jl/stable/config/
 
+style = "blue"
+indent = 4
+margin = 92
 always_for_in = true
 always_use_return = true
-margin = 80
-remove_extra_newlines = true
+whitespace_typedefs = true
+whitespace_ops_in_indices = true
+remove_extra_newlines = false
+import_to_standard_usings = false
+pipe_to_function_calls = false
 short_to_long_function_def = true
+always_comma_in_list = true
+trailing_comma = true
