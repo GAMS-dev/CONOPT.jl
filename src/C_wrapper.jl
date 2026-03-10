@@ -276,10 +276,12 @@ function initialize!(model::ConoptModel)
     coierror += LibConopt.COIDEF_NumHess(ptr, length(model.hess_structure.cols))
 
     # objective information
-    coierror += LibConopt.COIDEF_OptDir(ptr, Int(model.model_data.sense))
+    if model.model_data.sense == ObjSense_Maximize || model.model_data.sense == ObjSense_Minimize
+        coierror += LibConopt.COIDEF_OptDir(ptr, Int(model.model_data.sense))
 
-    # in model.nlp_model, we store objective as the last constraint, hence use ObjCon (not ObjVar) here
-    coierror += LibConopt.COIDEF_ObjCon(ptr, model.model_data.objective_row_index - 1)
+        # in model.nlp_model, we store objective as the last constraint, hence use ObjCon (not ObjVar) here
+        coierror += LibConopt.COIDEF_ObjCon(ptr, model.model_data.objective_row_index - 1)
+    end
 
     # tell CONOPT that our function evaluations include the linear terms
     coierror += LibConopt.COIDEF_FVincLin(ptr, 1)
@@ -342,13 +344,13 @@ function _ErrMsg_cb(rowno, colno, posno, msgptr, usrmem)::Cint
     if !model.silent
         error_message = "CONOPT Error: "
         if rowno == -1 && colno == -1
-            error_message *= "Jacobian element " * posno
+            error_message *= "Jacobian element " * string(posno)
         elseif rowno == -1
-            error_message *= "Variable " * colno
+            error_message *= "Variable " * string(colno)
         elseif colno == -1
-            error_message *= "Constraint " * rowno
+            error_message *= "Constraint " * string(rowno)
         else
-            error_message *= "Variable " * colno * " appearing in Constraint " * rowno
+            error_message *= "Variable " * string(colno) * " appearing in Constraint " * string(rowno)
         end
         if msgptr != C_NULL
             actual_message = unsafe_string(msgptr)
