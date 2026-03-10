@@ -102,7 +102,7 @@ end
 ###
 
 # solver name
-MOI.get(::Optimizer, ::MOI.SolverName) = "Conopt"
+MOI.get(::Optimizer, ::MOI.SolverName) = "CONOPT"
 
 # solver version
 function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
