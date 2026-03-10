@@ -21,6 +21,10 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 
     # variable mapping MOI to Conopt
     variable_indices::Vector{MOI.VariableIndex} # list of variable indices
+    var_index_to_pos::Array{Int, 1}
+
+    # constraint mapping MOI to Conopt
+    con_index_to_pos::Dict{MOI.ConstraintIndex, Int}
 
     solve_time::Float64         # stores the solve time
 
@@ -39,6 +43,8 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             MOI.Nonlinear.SparseReverseMode(), # automatic differentiation
 
             MOI.VariableIndex[],        # list of variable indices
+            Int[],
+            Dict{MOI.ConstraintIndex, Int}(),
             NaN,
         )
         return model
@@ -84,6 +90,8 @@ function MOI.empty!(model::Optimizer)
     model.nlp_data = MOI.NLPBlockData([], _EmptyNLPEvaluator(), false)
 
     empty!(model.variable_indices)
+    empty!(model.var_index_to_pos)
+    empty!(model.con_index_to_pos)
     return
 end
 
@@ -273,8 +281,8 @@ function MOI.supports(
     return true
 end
 
-_column(vi::MOI.VariableIndex) = vi.value
-_row(ci::MOI.ConstraintIndex) = ci.value
+_column(model::Optimizer, vi::MOI.VariableIndex) = model.var_index_to_pos[vi.value]
+_row(model::Optimizer, ci::MOI.ConstraintIndex) = model.con_index_to_pos[ci]
 
 ### starting values of primal variables
 
@@ -307,7 +315,7 @@ function MOI.get(
         throw(MOI.GetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    return model.inner.model_data.variable_primal_start[vi.value]
+    return model.inner.model_data.variable_primal_start[model.var_index_to_pos[vi.value]]
 end
 
 function MOI.set(
@@ -320,7 +328,7 @@ function MOI.set(
         throw(MOI.SetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    model.inner.model_data.variable_primal_start[vi.value] = value
+    model.inner.model_data.variable_primal_start[model.var_index_to_pos[vi.value]] = value
     return
 end
 
@@ -376,21 +384,26 @@ end
 """
 function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
     dest.variable_indices = MOI.get(src, MOI.ListOfVariableIndices())
+
     n_vars = length(dest.variable_indices)
     dest.inner.model_data.num_variables = n_vars
+
+    # getting the maximum variable index for the mapping array
+    max_index = isempty(dest.variable_indices) ? 0 : maximum(v.value for v in dest.variable_indices)
+    dest.var_index_to_pos = zeros(Int, max_index)
 
     dest.inner.model_data.variable_primal_start = zeros(Float64, n_vars)
     dest.inner.model_data.variable_lower = fill(-CONOPT_INF, n_vars)
     dest.inner.model_data.variable_upper = fill(CONOPT_INF, n_vars)
 
-    for v in dest.variable_indices
-        index = v.value
+    for (i, v) in enumerate(dest.variable_indices)
+        dest.var_index_to_pos[v.value] = i
 
         start_val = MOI.get(src, MOI.VariablePrimalStart(), v)
         if start_val !== nothing
-            dest.inner.model_data.variable_primal_start[index] = start_val
+            dest.inner.model_data.variable_primal_start[i] = start_val
         else
-            dest.inner.model_data.variable_primal_start[index] = 0.0
+            dest.inner.model_data.variable_primal_start[i] = 0.0
         end
     end
     return
@@ -455,19 +468,20 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
                 cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
 
                 if f == MOI.VariableIndex
-                    index = cons_function.value
+                    pos = dest.var_index_to_pos[cons_function.value]
 
                     if set <: MOI.GreaterThan
-                        _update_variable_bounds(dest.inner.model_data, index, lower=MOI.constant(cons_set))
+                        _update_variable_bounds(dest.inner.model_data, pos, lower=MOI.constant(cons_set))
                     elseif set <: MOI.LessThan
-                        _update_variable_bounds(dest.inner.model_data, index, upper=MOI.constant(cons_set))
+                        _update_variable_bounds(dest.inner.model_data, pos, upper=MOI.constant(cons_set))
                     elseif set <: MOI.EqualTo
-                        _update_variable_bounds(dest.inner.model_data, index, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
+                        _update_variable_bounds(dest.inner.model_data, pos, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
                     elseif set <: MOI.Interval
-                        _update_variable_bounds(dest.inner.model_data, index, lower=cons_set.lower, upper=cons_set.upper)
+                        _update_variable_bounds(dest.inner.model_data, pos, lower=cons_set.lower, upper=cons_set.upper)
                     end
                 else
                     dest.inner.model_data.num_constraints += 1
+                    dest.con_index_to_pos[index] = dest.inner.model_data.num_constraints
 
                     if set <: MOI.GreaterThan
                         push!(dest.inner.model_data.constraint_rhs, MOI.constant(cons_set))
@@ -803,7 +817,7 @@ function MOI.get(
 )
     MOI.check_result_index_bounds(model, attr)
     MOI.throw_if_not_valid(model, vi)
-    return model.inner.solution_status.x_value[_column(vi)]
+    return model.inner.solution_status.x_value[_column(model, vi)]
 end
 
 
@@ -822,7 +836,7 @@ function MOI.get(
 }
     MOI.check_result_index_bounds(model, attr)
     MOI.throw_if_not_valid(model, ci)
-    return model.inner.solution_status.y_value[_row(ci)]
+    return model.inner.solution_status.y_value[_row(model, ci)]
 end
 
 function MOI.get(
@@ -853,7 +867,7 @@ function MOI.get(
     MOI.check_result_index_bounds(model, attr)
     MOI.throw_if_not_valid(model, ci)
     s = _dual_multiplier(model)
-    return s * model.inner.solution_status.y_marginal[_row(ci)]
+    return s * model.inner.solution_status.y_marginal[_row(model, ci)]
 end
 
 function MOI.get(
