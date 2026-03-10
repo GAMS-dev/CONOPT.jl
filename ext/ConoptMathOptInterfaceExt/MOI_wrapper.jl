@@ -464,7 +464,6 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)::Vector{Int}
                     elseif set <: MOI.EqualTo
                         _update_variable_bounds(dest.inner.model_data, index, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
                     elseif set <: MOI.Interval
-                        println("Interval")
                         _update_variable_bounds(dest.inner.model_data, index, lower=cons_set.lower, upper=cons_set.upper)
                     end
                 else
@@ -880,7 +879,7 @@ function MOI.get(
     MOI.check_result_index_bounds(model, attr)
     MOI.throw_if_not_valid(model, ci)
     if model.inner.solution_status.x_basis[ci.value] == 0
-        rc = -model.inner.solution_status.x_marginal[ci.value]
+        rc = model.inner.solution_status.x_marginal[ci.value]
     else
         rc = 0
     end
@@ -905,9 +904,8 @@ function MOI.get(
 )
     MOI.check_result_index_bounds(model, attr)
     MOI.throw_if_not_valid(model, ci)
-    if model.inner.solution_status.x_basis[ci.value] == 0 # on the lower bound
-        rc = -model.inner.solution_status.x_marginal[ci.value]
-    elseif model.inner.solution_status.x_basis[ci.value] == 1 # on the upper bound
+    if model.inner.solution_status.x_basis[ci.value] == 0 ||
+        model.inner.solution_status.x_basis[ci.value] == 1
         rc = model.inner.solution_status.x_marginal[ci.value]
     else
         rc = 0

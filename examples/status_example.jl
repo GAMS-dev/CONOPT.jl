@@ -1,25 +1,25 @@
 using JuMP
 using Conopt
 
-# Initialize the model 
+# Initialize the model
 model = Model(Conopt.Optimizer)
 
 # 1. Variables (2 original, 2 new)
-@variable(model, 1 <= x) # 
-@variable(model, y >= 1) # 
+@variable(model, x >= 1) #
+@variable(model, y >= 1) #
 @variable(model, z >= 0)
 @variable(model, w >= 0)
 
 # 2. Constraints (Named so we can extract their duals!)
-@constraint(model, c1, x + y >= 5) # 
+@constraint(model, c1, x + y >= 5) #
 @constraint(model, c2, 2*x + z >= 8)
 @constraint(model, c3, y + 3*w >= 6)
 
 # 3. Objective Function (Incorporating the new variables)
-@objective(model, Min, x + 2*y + 3*z + w + 2) # 
+@objective(model, Min, x + 2*y + 3*z + w + 2) #
 
 # 4. Hand off to Conopt.jl!
-optimize!(model) # 
+optimize!(model) #
 
 # ==========================================
 # EXTRACTION PHASE
@@ -38,7 +38,7 @@ println("Solve Time: ", time_sec, " seconds")
 if has_values(model)
     # Objective Value (Uses your MOI.ObjectiveValue getter)
     println("\nObjective Value: ", objective_value(model))
-    
+
     # Primal Solutions (Uses your MOI.VariablePrimal getters)
     println("\n--- PRIMAL SOLUTIONS (Variables) ---")
     println("x = ", value(x))
