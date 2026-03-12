@@ -48,7 +48,6 @@ end
 mutable struct ModelData
     num_variables::Int          # the number of variables in the problem
     num_constraints::Int        # number of constraints
-    num_ranged::Int             # number of ranged constraints
 
     variable_lower::Vector{Float64}             # variable lower bounds
     variable_upper::Vector{Float64}             # variable upper bounds
@@ -66,7 +65,6 @@ mutable struct ModelData
         return new(
             0,                          # number of variables
             0,                          # number of constraints
-            0,                          # number of ranged rows
             Float64[],                  # variable lower bounds
             Float64[],                  # variable upper bounds
             Float64[],                  # primal starting values
@@ -262,10 +260,9 @@ function initialize!(model::ConoptModel)
     coierror = 0
 
     # set problem sizes
-    coierror += LibConopt.COIDEF_NumVar(ptr, model.model_data.num_variables + model.model_data.num_ranged) # add a slack variable for each ranged constraint
+    coierror += LibConopt.COIDEF_NumVar(ptr, model.model_data.num_variables)
     coierror += LibConopt.COIDEF_NumCon(ptr, model.model_data.num_constraints) # objective already included here
 
-    # number of Jacobian nonzeroes: each slack var created for a ranged row adds a Jacobian nnz;
     # objective also counts as constraint and is already included in jacobian_structure
     coierror += LibConopt.COIDEF_NumNz(ptr, length(model.jac_structure.index))
 
@@ -421,7 +418,7 @@ function _ReadMatrix_cb(lower, curr, upper, vsta, constrtype, rhs, esta, colsta,
         numvar, numcon, numnz, usrmem)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
-    @assert numvar == model.model_data.num_variables + model.model_data.num_ranged
+    @assert numvar == model.model_data.num_variables
     norigvars = model.model_data.num_variables
 
     # fill in variable data
