@@ -16,7 +16,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 
     # NLP data
     nlp_model::Union{Nothing,MOI.Nonlinear.Model} # specialised NLP model structure
-    nlp_data::MOI.NLPBlockData  # NLP data structure to make use of MOI's evaluation functionality
+    evaluator::Union{Nothing, MOI.Nonlinear.Evaluator}
     ad_backend::MOI.Nonlinear.AbstractAutomaticDifferentiation # automatic differentiation backend
 
     # variable mapping MOI to Conopt
@@ -25,6 +25,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 
     # constraint mapping MOI to Conopt
     con_index_to_pos::Dict{MOI.ConstraintIndex, Int}
+    nlcon_index_to_pos::Dict{MOI.Nonlinear.ConstraintIndex, Int}
 
     solve_time::Float64         # stores the solve time
 
@@ -39,15 +40,51 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             1e+15,                  # CONOPT's default Lim_Variable parameter
 
             MOI.Nonlinear.Model(),  # NLP model
-            MOI.NLPBlockData([], _EmptyNLPEvaluator(), false), # empty block data
+            nothing, # empty evaluator
             MOI.Nonlinear.SparseReverseMode(), # automatic differentiation
 
             MOI.VariableIndex[],        # list of variable indices
             Int[],
             Dict{MOI.ConstraintIndex, Int}(),
+            Dict{MOI.Nonlinear.ConstraintIndex, Int}(),
             NaN,
         )
         return model
+    end
+end
+
+mutable struct EvaluationCache
+    row_jac_start::Vector{Int}    # start indices for the row_jac mapping
+    row_jac_idx::Vector{Int}    # the indices for the row_jac_mapping
+    cached_g::Vector{Float64}   # store for the function values computed by the evaluator
+    cached_jac::Vector{Float64} # store for the jacobian values computed by the evaluator
+
+    hess_perm::Vector{Int}      # the permutation mapping for the hessian structure
+    cons_map::Vector{Int}       # a mapping from CONOPT to MOI for the constraints
+    u_buffer::Vector{Float64}   # a buffer for the multipliers when mapping between CONOPT and MOI
+    cached_hess::Vector{Float64}# store of the hessian values, used as a buffer in the evaluation method
+
+    function EvaluationCache(num_constraints::Int, num_jac_nnz::Int, num_hess_nnz::Int)
+        return new(
+            zeros(num_constraints + 1),
+            zeros(num_jac_nnz),
+            zeros(num_constraints),
+            zeros(num_jac_nnz),
+            zeros(num_hess_nnz),
+            zeros(num_constraints),
+            zeros(num_constraints),
+            zeros(num_hess_nnz)
+        )
+    end
+
+    function EvaluationCache()
+        return new(
+            Vector{Int}[],
+            Float64[],
+            Float64[],
+            Int[],
+            Float64[]
+        )
     end
 end
 
@@ -88,11 +125,12 @@ function MOI.empty!(model::Optimizer)
     model.inner = Conopt.ConoptModel()
 
     model.nlp_model = MOI.Nonlinear.Model()
-    model.nlp_data = MOI.NLPBlockData([], _EmptyNLPEvaluator(), false)
+    model.evaluator = nothing
 
     empty!(model.variable_indices)
     empty!(model.var_index_to_pos)
     empty!(model.con_index_to_pos)
+    empty!(model.nlcon_index_to_pos)
     return
 end
 
@@ -378,6 +416,63 @@ MOI.hessian_lagrangian_structure(::_EmptyNLPEvaluator) = Tuple{Int64,Int64}[]
 MOI.eval_constraint_jacobian(::_EmptyNLPEvaluator, J, x) = nothing
 MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
 
+function _eval_f_ini(model::Optimizer, x::Vector{Float64}, rowlist::Vector{Cint}, mode::Cint)
+    eval_cache = model.inner.user_data::EvaluationCache
+
+    # The rowlist can be ignored if we evaluate and cache everything.
+    if mode == 1 || mode == 3
+        MOI.eval_constraint(model.evaluator, eval_cache.cached_g, x)
+    end
+    if mode == 2 || mode == 3
+        MOI.eval_constraint_jacobian(model.evaluator, eval_cache.cached_jac, x)
+    end
+    return
+end
+
+function _eval_f(model::Optimizer, rownum::Cint)
+    eval_cache = model.inner.user_data::EvaluationCache
+
+    return eval_cache.cached_g[rownum + 1]
+end
+
+function _eval_jac(model::Optimizer, rownum::Cint, jac_idx::Vector{Cint}, jac_vals::Vector{Float64})
+    eval_cache = model.inner.user_data::EvaluationCache
+
+    start = eval_cache.row_jac_start[rownum + 1]
+    for i in 1:length(jac_idx)
+        @assert start + i - 1 < eval_cache.row_jac_start[rownum + 2]
+        jac_vals[jac_idx[i] + 1] = eval_cache.cached_jac[eval_cache.row_jac_idx[start + i - 1]]
+    end
+    return
+end
+
+function _eval_hess(model::Optimizer, x::Vector{Float64}, u::Vector{Float64}, rowno::Vector{Cint},
+        colno::Vector{Cint}, value::Vector{Float64})
+    eval_cache = model.inner.user_data::EvaluationCache
+    n_vars = model.inner.model_data.num_variables
+    n_cons = model.inner.model_data.num_constraints
+    nnz_hess = length(eval_cache.hess_perm)
+
+    # mapping the multipliers between CONOPT and MOI
+    for i in 1:length(u)
+        eval_cache.u_buffer[i] = u[eval_cache.cons_map[i]]
+    end
+
+    # calling MOI to compute numerical values
+    # NOTE: CONOPT includes the objective in the constraint matrix
+    MOI.eval_hessian_lagrangian(model.evaluator, eval_cache.cached_hess, x, 0.0, eval_cache.u_buffer)
+
+    # mapping the values from the MOI order to CONOPT order via hess_perm
+    for i in 1:nnz_hess
+        moi_idx = eval_cache.hess_perm[i]
+        hess_val = eval_cache.cached_hess[moi_idx]
+
+        # Store in the pointer provided by the solver
+        value[i] = hess_val
+    end
+
+    return nothing
+end
 
 
 ###
@@ -475,6 +570,7 @@ function _set_objective_sense!(model::Optimizer, sense::MOI.OptimizationSense)
     end
 end
 
+
 """
     function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
 
@@ -483,24 +579,21 @@ end
 """
 function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
     dest.inner.model_data.num_constraints = 0
-
     dest.inner.model_data.constraint_rhs = Float64[]
     dest.inner.model_data.constraint_type = Cint[]
 
+    num_linear_cons = 0
     for (f, set) in MOI.get(src, MOI.ListOfConstraintTypesPresent())
-
         conss_indices = MOI.get(src, MOI.ListOfConstraintIndices{f,set}())
         if isempty(conss_indices)
             continue
         end
 
-        for index in conss_indices
-            cons_set = MOI.get(src, MOI.ConstraintSet(), index)
-            cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
-
-            if f == MOI.VariableIndex
+        if f == MOI.VariableIndex
+            for index in conss_indices
+                cons_set = MOI.get(src, MOI.ConstraintSet(), index)
+                cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
                 pos = dest.var_index_to_pos[cons_function.value]
-
                 if set <: MOI.GreaterThan
                     _update_variable_bounds(dest.inner.model_data, pos, lower=MOI.constant(cons_set))
                 elseif set <: MOI.LessThan
@@ -510,17 +603,26 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
                 elseif set <: MOI.Interval
                     _update_variable_bounds(dest.inner.model_data, pos, lower=cons_set.lower, upper=cons_set.upper)
                 end
-            elseif f == MOI.VectorOfVariables
-                if set <: MOI.HyperRectangle
+            end
+        elseif f == MOI.VectorOfVariables
+             if set <: MOI.HyperRectangle
+                for index in conss_indices
+                    cons_set = MOI.get(src, MOI.ConstraintSet(), index)
+                    cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
                     for (i, var_ix) in enumerate(cons_function.variables)
                         pos = dest.var_index_to_pos[var_ix.value]
                         _update_variable_bounds(dest.inner.model_data, pos, lower=cons_set.lower[i], upper=cons_set.upper[i])
                     end
                 end
-            else
+            end
+        else
+            for index in conss_indices
+                cons_set = MOI.get(src, MOI.ConstraintSet(), index)
+                cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
+
+                # This counter handles linear, quadratic, AND nonlinear rows
                 dest.inner.model_data.num_constraints += 1
                 dest.con_index_to_pos[index] = dest.inner.model_data.num_constraints
-                println(index, " ", dest.inner.model_data.num_constraints)
 
                 if set <: MOI.GreaterThan
                     push!(dest.inner.model_data.constraint_rhs, MOI.constant(cons_set))
@@ -533,28 +635,36 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
                     push!(dest.inner.model_data.constraint_type, 0)
                 end
 
-                MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
+                # Add to the unified evaluator
+                cons_index = MOI.Nonlinear.add_constraint(dest.nlp_model, cons_function, cons_set)
+                dest.nlcon_index_to_pos[cons_index] = dest.inner.model_data.num_constraints
             end
         end
     end
 
-    # Handle Objective
-    obj_attr = nothing
-    for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
-        if attr isa MOI.ObjectiveFunction
-            obj_attr = attr
-            break
-        end
-    end
+    attr_list = MOI.get(src, MOI.ListOfModelAttributesSet())
+    has_objective = any(attr isa MOI.ObjectiveFunction for attr in attr_list)
 
-    if obj_attr !== nothing
-        obj = MOI.get(src, obj_attr)
-        MOI.Nonlinear.add_constraint(dest.nlp_model, obj, MOI.Interval(-CONOPT_INF, CONOPT_INF))
+    if has_objective
+        F = MOI.get(src, MOI.ObjectiveFunctionType())
+
+        obj_expr = MOI.get(src, MOI.ObjectiveFunction{F}())
+
+        cons_index = MOI.Nonlinear.add_constraint(dest.nlp_model, obj_expr, MOI.Interval(-CONOPT_INF, CONOPT_INF))
 
         dest.inner.model_data.num_constraints += 1
+        dest.nlcon_index_to_pos[cons_index] = dest.inner.model_data.num_constraints
         dest.inner.model_data.objective_row_index = dest.inner.model_data.num_constraints
-        push!(dest.inner.model_data.constraint_rhs, -obj.constant)
-        push!(dest.inner.model_data.constraint_type, 3)
+
+        #obj_constant = F <: MOI.ScalarNonlinearFunction ? 0.0 : MOI.constant(obj_expr)
+        obj_constant = if obj_expr isa MOI.ScalarAffineFunction# || obj_expr isa MOI.ScalarQuadraticFunction
+            MOI.constant(obj_expr)
+        else
+            0.0
+        end
+
+        push!(dest.inner.model_data.constraint_rhs, -obj_constant)
+        push!(dest.inner.model_data.constraint_type, 3) # CONOPT's free row flag
     end
 
     # setting the objective sense in the Conopt model data
@@ -563,16 +673,14 @@ end
 
 
 """
-    function _setup_evaluator!(dest::Optimizer)
+    function _setup_evaluator!(dest::Optimizer, src::MOI.ModelLike)
 
     setup the evaluator for the NLP. This is used to idenfity the nonlinear terms in the Jacobian
     and identify the structure of the Hessian.
 """
-function _setup_evaluator!(dest::Optimizer)
-    dest.nlp_data = MOI.NLPBlockData(
-        MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices)
-    )
-    MOI.initialize(dest.nlp_data.evaluator, [:Jac, :Hess])
+function _setup_evaluator!(dest::Optimizer, src::MOI.ModelLike)
+    dest.evaluator = MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices)
+    MOI.initialize(dest.evaluator, [:Jac, :Hess])
     return
 end
 
@@ -584,19 +692,29 @@ end
 """
 function _setup_matrices!(dest::Optimizer)
     n_vars = dest.inner.model_data.num_variables
+    num_cons = dest.inner.model_data.num_constraints
 
-    # --- Jacobian Extraction and Setup ---
-    raw_jac_str = MOI.jacobian_structure(dest.nlp_data.evaluator)
+    # extracting the jacobian and hessian structure
+    raw_jac_str = MOI.jacobian_structure(dest.evaluator)
+    raw_hess_str = MOI.hessian_lagrangian_structure(dest.evaluator)
+
+    # storing the sizes of the jacobian and hessian
     total_jac_nnz = length(raw_jac_str)
+    total_hess_nnz = length(raw_hess_str)
 
+    # initialising the evaluation cache
+    eval_cache = EvaluationCache(num_cons, total_jac_nnz, total_hess_nnz)
+
+    # creating the matrix structure from the jacobian
     jac_vals = zeros(total_jac_nnz)
-    MOI.eval_constraint_jacobian(dest.nlp_data.evaluator, jac_vals, dest.inner.model_data.variable_primal_start)
+    MOI.eval_constraint_jacobian(dest.evaluator, jac_vals, dest.inner.model_data.variable_primal_start)
 
-    p_jac = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][2], raw_jac_str[i][1]))
-    sorted_rows = Cint[raw_jac_str[i][1] - 1 for i in p_jac]
-    sorted_cols = Int[raw_jac_str[i][2] for i in p_jac]
-    sorted_jac_vals = jac_vals[p_jac]
+    p_jac_colwise = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][2], raw_jac_str[i][1]))
+    sorted_rows = Cint[raw_jac_str[i][1] - 1 for i in p_jac_colwise]
+    sorted_cols = Int[raw_jac_str[i][2] for i in p_jac_colwise]
+    sorted_jac_vals = jac_vals[p_jac_colwise]
 
+    # storing the jacobian structure
     dest.inner.jac_structure.start = zeros(Cint, n_vars + 1)
     for c in sorted_cols
         dest.inner.jac_structure.start[c + 1] += 1
@@ -607,9 +725,14 @@ function _setup_matrices!(dest::Optimizer)
     dest.inner.jac_structure.index = sorted_rows
 
     # --- Nonlinear Mapping via Hessian ---
-    nonlinear_vars_in_row = [BitSet() for _ in 1:dest.inner.model_data.num_constraints]
-    for r in 1:dest.inner.model_data.num_constraints
-        hess_struct_r = MOI.hessian_constraint_structure(dest.nlp_data.evaluator, r)
+    nonlinear_vars_in_row = [BitSet() for _ in 1:num_cons]
+
+    # Because ALL equations (including the objective) are now just rows in the evaluator,
+    # we can do a single, clean loop from 1 to num_cons.
+    for r in 1:num_cons
+        # Note: MOI does not have a standard `hessian_constraint_structure` in its public API.
+        # Assuming this is a custom JuMP internal function you are using, it now applies cleanly to all rows.
+        hess_struct_r = MOI.hessian_constraint_structure(dest.evaluator, r)
         for (c1, c2) in hess_struct_r
             push!(nonlinear_vars_in_row[r], c1)
             push!(nonlinear_vars_in_row[r], c2)
@@ -618,43 +741,102 @@ function _setup_matrices!(dest::Optimizer)
 
     dest.inner.jac_structure.nlflag = zeros(Cint, total_jac_nnz)
     dest.inner.jac_structure.values = zeros(Float64, total_jac_nnz)
-    dest.inner.eval_cache.row_to_jac_index = [Int[] for _ in 1:dest.inner.model_data.num_constraints]
 
+    # getting the nonlinear structure
     for i in 1:total_jac_nnz
         r = sorted_rows[i] + 1
         c = sorted_cols[i]
+
+        # Mark elements as nonlinear (1) or linear (0) for CONOPT
         if c in nonlinear_vars_in_row[r]
             dest.inner.jac_structure.nlflag[i] = Cint(1)
             dest.inner.jac_structure.values[i] = 0.0
-            push!(dest.inner.eval_cache.row_to_jac_index[r], i)
         else
             dest.inner.jac_structure.nlflag[i] = Cint(0)
             dest.inner.jac_structure.values[i] = sorted_jac_vals[i]
         end
     end
 
-    # --- Lagrangian Hessian Setup ---
-    raw_hess_str = MOI.hessian_lagrangian_structure(dest.nlp_data.evaluator)
-    p_hess = sortperm(1:length(raw_hess_str), by = i -> (raw_hess_str[i][2], raw_hess_str[i][1]))
+    # generating a mapping between the MOI jacobian and the row-wise structure of CONOPT
+    p_jac_rowwise = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][1], raw_jac_str[i][2]))
+    # computing the row counts for the row_to_jac_index
+    for i in 1:total_jac_nnz
+        r = raw_jac_str[p_jac_rowwise[i]][1]
+        c = raw_jac_str[p_jac_rowwise[i]][2]
 
-    dest.inner.hess_structure.rows = Cint[raw_hess_str[i][1] - 1 for i in p_hess]
-    dest.inner.hess_structure.cols = Cint[raw_hess_str[i][2] - 1 for i in p_hess]
+        if c in nonlinear_vars_in_row[r]
+            eval_cache.row_jac_start[r + 1] += 1
+        end
+    end
+
+    # performing a prefix sum for the pointer start values
+    eval_cache.row_jac_start[1] = 1
+    for i in 1:num_cons
+        eval_cache.row_jac_start[i + 1] += eval_cache.row_jac_start[i]
+    end
+
+    # storage for the current row
+    current_row_pos = copy(eval_cache.row_jac_start)
+
+    for i in 1:total_jac_nnz
+        r = raw_jac_str[p_jac_rowwise[i]][1]
+        c = raw_jac_str[p_jac_rowwise[i]][2]
+
+        if c in nonlinear_vars_in_row[r]
+            current_index = current_row_pos[r]
+
+            eval_cache.row_jac_idx[current_index] = i
+
+            current_row_pos[r] += 1
+        end
+    end
+
+    # --- Lagrangian Hessian Setup ---
+    # We query the evaluator directly now
+
+    # cleaning the hessian structure to make it lower triangular
+    lower_tri_hess = unique([t[1] >= t[2] ? t : (t[2], t[1]) for t in raw_hess_str])
+
+    # sorting the hessian such that it is first rows, then columns
+    hess_perm = sortperm(1:length(lower_tri_hess), by = i -> (lower_tri_hess[i][2], lower_tri_hess[i][1]))
+
+    dest.inner.hess_structure.rows = Cint[lower_tri_hess[i][1] - 1 for i in hess_perm]
+    dest.inner.hess_structure.cols = Cint[lower_tri_hess[i][2] - 1 for i in hess_perm]
+
+    # storing the permutation mapping and allocating memory for the hessian evaluation
+    eval_cache.hess_perm = hess_perm
+
+    # setting up a constraint map between CONOPT indices and MOI
+    constraints = dest.nlp_model.constraints
+    for (i, k) in enumerate(keys(constraints))
+        eval_cache.cons_map[i] = dest.nlcon_index_to_pos[k]
+    end
+
+    # setting the eval_cache as the user data
+    dest.inner.user_data = eval_cache
 
     return
 end
 
 function setup_model(dest::Optimizer, src::MOI.ModelLike)
-    # 1. Variables, Bounds, and Primal Starts
+    # storing the variables, bounds and primal starts
     _setup_variables!(dest, src)
 
-    # 2. Constraints and Objective
+    # storing the constraints and objective.
+    # NOTE: the objective is stored as a constraint in CONOPT
     _setup_constraints!(dest, src)
 
-    # 3. Evaluator Initialization
-    _setup_evaluator!(dest)
+    # initializing the evaluator for the non-linear expressions
+    _setup_evaluator!(dest, src)
 
-    # 4. Matrix and Hessian Construction
+    # constructing the Jacobian and Hessian matrices.
     _setup_matrices!(dest)
+
+    # setting the callbacks
+    dest.inner.callbacks.eval_f_ini = (x, rowlist, mode) -> _eval_f_ini(dest, x, rowlist, mode)
+    dest.inner.callbacks.eval_f = (rownum::Cint) -> _eval_f(dest, rownum)
+    dest.inner.callbacks.eval_jac = (rownum::Cint, jac_idx, jac_vals) -> _eval_jac(dest, rownum, jac_idx, jac_vals)
+    dest.inner.callbacks.eval_hess = (x, u, rowno, colno, value) -> _eval_hess(dest, x, u, rowno, colno, value)
 
     return
 end
@@ -669,29 +851,21 @@ end
 
 # this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
 function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
-    # TODO: what we need to get here: matrix of affine terms, obj and conss functions to evaluate, numbers of variables, nonzeroes, etc., Jacobian and Hessian structure, first and second derivative evaluations
-
-    println("optimize! call for moving stuff")
     MOI.empty!(dest)
     index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
 
     show(src)
-    println("\nmodel: ")
     show(src.model)
     print(src.model)
 
     setup_model(dest, src)
     setup_inner(dest)
 
-    println("\ncalling solve!")
-
     start_time = time()
 
     result = Conopt.solve!(dest.inner)
 
     dest.solve_time = time() - start_time
-
-    #error("stopping for now, result = ", string(result))
 
     return index_map, false
 end
@@ -737,7 +911,8 @@ function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
     solve_status = model.inner.solution_status.solve_status
     if solve_status == Conopt.SolveStatus_Normal_Completion
         if model_status == Conopt.ModelStatus_Optimal
-            return MOI.OPTIMAL
+            #return MOI.OPTIMAL # we don't return OPTIMAL because CONOPT is considered a local solver
+            return MOI.LOCALLY_SOLVED
         elseif model_status == Conopt.ModelStatus_Locally_Optimal
             return MOI.LOCALLY_SOLVED
         elseif model_status == Conopt.ModelStatus_Unbounded
@@ -854,8 +1029,6 @@ function MOI.get(
 }
     MOI.check_result_index_bounds(model, attr)
     MOI.throw_if_not_valid(model, ci)
-    println()
-    println(ci, " ", _row(model, ci), " ", model.inner.solution_status.y_value[_row(model, ci)])
     return model.inner.solution_status.y_value[_row(model, ci)]
 end
 

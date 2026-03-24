@@ -111,18 +111,6 @@ mutable struct HessianStructure
     end
 end
 
-mutable struct EvaluationCache
-    row_to_jac_index::Vector{Vector{Int}}   # mapping from a row to non-linear entries in the jacobian
-    cached_jac::Vector{Float64} # store for the jacobian values computed by the evaluator
-
-    function EvaluationCache()
-        return new(
-            Vector{Int}[],
-            Float64[]
-        )
-    end
-end
-
 mutable struct SolutionStatus
     x_value::Vector{Float64}        # the final solution value for the variables
     x_marginal::Vector{Float64}     # the marginal or reduced costs for the variables
@@ -206,12 +194,12 @@ mutable struct ConoptModel
     jac_structure::JacobianStructure    # a cache of the jacobian structure
     hess_structure::HessianStructure    # a cache of the hessian structure
 
-    # evaluation cache
-    eval_cache::EvaluationCache # a structure to store a cache of the function, derivative and second derivative evaluation.
-
     callbacks::ConoptCallbacks  # the callback functions
 
     solution_status::SolutionStatus     # the structure to store the final solution and status
+
+    # evaluation cache
+    user_data::Any      # an element of the structure for user data.
 
     function ConoptModel()
         cntvect = Ref{Ptr{Cvoid}}()
@@ -227,9 +215,9 @@ mutable struct ConoptModel
             ModelData(),
             JacobianStructure(),
             HessianStructure(),
-            EvaluationCache(),
             ConoptCallbacks(),
-            SolutionStatus()
+            SolutionStatus(),
+            nothing
         )
 
         finalizer(_free_control_vector!, model)
@@ -462,22 +450,76 @@ function _ReadMatrix_cb(lower, curr, upper, vsta, constrtype, rhs, esta, colsta,
     return Cint(0)
 end
 
+function _FDEvalIni_cb(
+    x_ptr::Ptr{Cdouble},
+    rowlist_ptr::Ptr{Cint},
+    mode::Cint,
+    listsize::Cint,
+    numthread_ptr::Ptr{Cint},
+    ignerr_ptr::Ptr{Cint},
+    errcnt_ptr::Ptr{Cint},
+    n::Cint,
+    usrmem::Ptr{Cvoid},
+)::Cint
+    model = unsafe_pointer_to_objref(usrmem)::ConoptModel
+
+    x = unsafe_wrap(Array, x_ptr, n)
+    rowlist = unsafe_wrap(Array, rowlist_ptr, listsize)
+
+    model.callbacks.eval_f_ini(x, rowlist, mode)
+
+    return 0
+end
+
 # define the function and derivative evaluation callback
 function _FDEval_cb(x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numjac, thread, usrmem)::Cint
-    #model = unsafe_pointer_to_objref(usrmem)::ConoptModel
+    model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
-    #x_values = unsafe_wrap(Array{Float64}, x, numvar)
-    ## evaluating the non-linear functions
-    #if mode == 1 || model == 3
-        #success = model.callbacks.eval_f(x_values, rowno)
-        #unsafe_store!(g, value)
-    #end
+    if mode == 1 || mode == 3
+        value = model.callbacks.eval_f(rowno)
+        unsafe_store!(g, value)
+    end
 
-    #if mode == 2 || model == 3
-        #jac_res = unsafe_wrap(Array{Float64}, jac, numjac)
-        #jac_ind = unsafe_wrap(Array{Cint}, jacnum, numjac)
-        #model.callbacks.eval_jac(x_values, rowno, jac_ind, jac_res)
-    #end
+    if mode == 2 || mode == 3
+        jac_res = unsafe_wrap(Array{Float64}, jac, numvar; own=false)
+        jac_ind = unsafe_wrap(Array{Cint}, jacnum, numjac; own=false)
+        model.callbacks.eval_jac(rowno, jac_ind, jac_res)
+    end
+
+    return 0
+end
+
+
+function _SDLagrStr_cb(rowno, colno, nodrv, numvar, numcons, numhess, usrmem)::Cint
+    model = unsafe_pointer_to_objref(usrmem)::ConoptModel
+
+    @assert numvar == model.model_data.num_variables
+    @assert numcons == model.model_data.num_constraints
+    @assert numhess == length(model.hess_structure.rows)
+    @assert numhess == length(model.hess_structure.cols)
+
+    unsafe_copyto!(rowno, pointer(model.hess_structure.rows), numhess)
+    unsafe_copyto!(colno, pointer(model.hess_structure.cols), numhess)
+
+    if !model.hess_structure.keep
+        empty!(model.hess_structure.rows)
+        empty!(model.hess_structure.cols)
+    end
+
+    return 0
+end
+
+
+function _SDLagrVal_cb(x, u, rowno, colno, value, nodrv, numvar, numcons, numhess, usrmem)::Cint
+    model = unsafe_pointer_to_objref(usrmem)::ConoptModel
+
+    x_val = unsafe_wrap(Array{Float64}, x, numvar; own=false)
+    u_val = unsafe_wrap(Array{Float64}, u, numcons; own=false)
+    hess_row = unsafe_wrap(Array{Cint}, rowno, numhess; own=false)
+    hess_col = unsafe_wrap(Array{Cint}, colno, numhess; own=false)
+    hess_val = unsafe_wrap(Array{Float64}, value, numhess; own=false)
+
+    model.callbacks.eval_hess(x_val, u_val, hess_row, hess_col, hess_val)
 
     return 0
 end
@@ -488,6 +530,19 @@ function register_callbacks(model::ConoptModel)
     ptr = model.cntvect[]
 
     # pass the callback to CONOPT
+    FDEvalIni_c = @cfunction(_FDEvalIni_cb, Cint, (
+        Ptr{Cdouble},
+        Ptr{Cint},
+        Cint,
+        Cint,
+        Ptr{Cint},
+        Ptr{Cint},
+        Ptr{Cint},
+        Cint,
+        Ptr{Cvoid},
+    ))
+    coierror += LibConopt.COIDEF_FDEvalIni(ptr, FDEvalIni_c)
+
     FDEval_c = @cfunction(_FDEval_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cint,
                                           Ptr{Cint}, Cint, Cint, Ptr{Cint},
                                           Cint, Cint, Cint, Ptr{Cvoid}))
@@ -512,6 +567,14 @@ function register_callbacks(model::ConoptModel)
                                               Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
                                               Cint, Cint, Ptr{Cvoid}))
     coierror += LibConopt.COIDEF_Solution(ptr, Solution_c)
+
+    SDLagrStr_c = @cfunction(_SDLagrStr_cb, Cint, (Ptr{Cint}, Ptr{Cint}, Ptr{Cint},
+                                                    Cint, Cint, Cint, Ptr{Cvoid}))
+    coierror += LibConopt.COIDEF_2DLagrStr(ptr, SDLagrStr_c)
+
+    SDLagrVal_c = @cfunction(_SDLagrVal_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
+                                                   Ptr{Cdouble}, Ptr{Cint}, Cint, Cint, Cint, Ptr{Cvoid}))
+    coierror += LibConopt.COIDEF_2DLagrVal(ptr, SDLagrVal_c)
 
     return coierror
 end
