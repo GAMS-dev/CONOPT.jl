@@ -54,15 +54,15 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 end
 
 mutable struct EvaluationCache
-    row_jac_start::Vector{Int}    # start indices for the row_jac mapping
+    row_jac_start::Vector{Int}  # start indices for the row_jac mapping
     row_jac_idx::Vector{Int}    # the indices for the row_jac_mapping
     cached_g::Vector{Float64}   # store for the function values computed by the evaluator
     cached_jac::Vector{Float64} # store for the jacobian values computed by the evaluator
 
-    hess_perm::Vector{Int}      # the permutation mapping for the hessian structure
-    cons_map::Vector{Int}       # a mapping from CONOPT to MOI for the constraints
-    u_buffer::Vector{Float64}   # a buffer for the multipliers when mapping between CONOPT and MOI
-    cached_hess::Vector{Float64}# store of the hessian values, used as a buffer in the evaluation method
+    hessian_map::Vector{Int}        # the permutation mapping for the hessian structure
+    cons_map::Vector{Int}           # a mapping from CONOPT to MOI for the constraints
+    u_buffer::Vector{Float64}       # a buffer for the multipliers when mapping between CONOPT and MOI
+    cached_hess::Vector{Float64}    # store of the hessian values, used as a buffer in the evaluation method
 
     function EvaluationCache(num_constraints::Int, num_jac_nnz::Int, num_hess_nnz::Int)
         return new(
@@ -386,7 +386,7 @@ function MOI.get(
         throw(MOI.GetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    return model.inner.model_data.variable_primal_start[model.var_index_to_pos[vi.value]]
+    return model.inner.model_data.variable_primal_start[_column(model, vi)]
 end
 
 function MOI.set(
@@ -399,7 +399,7 @@ function MOI.set(
         throw(MOI.SetAttributeNotAllowed(attr, "Variable is a Parameter"))
     end
     MOI.throw_if_not_valid(model, vi)
-    model.inner.model_data.variable_primal_start[model.var_index_to_pos[vi.value]] = value
+    model.inner.model_data.variable_primal_start[_column(model, vi)] = value
     return
 end
 
@@ -451,7 +451,7 @@ function _eval_hess(model::Optimizer, x::Vector{Float64}, u::Vector{Float64}, ro
     eval_cache = model.inner.user_data::EvaluationCache
     n_vars = model.inner.model_data.num_variables
     n_cons = model.inner.model_data.num_constraints
-    nnz_hess = length(eval_cache.hess_perm)
+    nnz_hess = length(eval_cache.hessian_map)
 
     # mapping the multipliers between CONOPT and MOI
     for i in 1:length(u)
@@ -462,13 +462,14 @@ function _eval_hess(model::Optimizer, x::Vector{Float64}, u::Vector{Float64}, ro
     # NOTE: CONOPT includes the objective in the constraint matrix
     MOI.eval_hessian_lagrangian(model.evaluator, eval_cache.cached_hess, x, 0.0, eval_cache.u_buffer)
 
-    # mapping the values from the MOI order to CONOPT order via hess_perm
+    # mapping the values from the MOI order to CONOPT order via hessian_map
+    fill!(value, 0.0)
     for i in 1:nnz_hess
-        moi_idx = eval_cache.hess_perm[i]
-        hess_val = eval_cache.cached_hess[moi_idx]
+        hess_idx = eval_cache.hessian_map[i]
+        hess_val = eval_cache.cached_hess[i]
 
         # Store in the pointer provided by the solver
-        value[i] = hess_val
+        value[hess_idx] += hess_val
     end
 
     return nothing
@@ -534,6 +535,7 @@ function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
             dest.inner.model_data.variable_primal_start[i] = 0.0
         end
     end
+
     return
 end
 
@@ -663,7 +665,8 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
             0.0
         end
 
-        push!(dest.inner.model_data.constraint_rhs, -obj_constant)
+        #push!(dest.inner.model_data.constraint_rhs, -obj_constant)
+        push!(dest.inner.model_data.constraint_rhs, 0.0)
         push!(dest.inner.model_data.constraint_type, 3) # CONOPT's free row flag
     end
 
@@ -691,7 +694,7 @@ end
     setup up the jacobian and hessian matrices in a form that can be supplied to Conopt
 """
 function _setup_matrices!(dest::Optimizer)
-    n_vars = dest.inner.model_data.num_variables
+    num_vars = dest.inner.model_data.num_variables
     num_cons = dest.inner.model_data.num_constraints
 
     # extracting the jacobian and hessian structure
@@ -715,11 +718,11 @@ function _setup_matrices!(dest::Optimizer)
     sorted_jac_vals = jac_vals[p_jac_colwise]
 
     # storing the jacobian structure
-    dest.inner.jac_structure.start = zeros(Cint, n_vars + 1)
+    dest.inner.jac_structure.start = zeros(Cint, num_vars + 1)
     for c in sorted_cols
         dest.inner.jac_structure.start[c + 1] += 1
     end
-    for i in 1:n_vars
+    for i in 1:num_vars
         dest.inner.jac_structure.start[i + 1] += dest.inner.jac_structure.start[i]
     end
     dest.inner.jac_structure.index = sorted_rows
@@ -772,7 +775,7 @@ function _setup_matrices!(dest::Optimizer)
     # performing a prefix sum for the pointer start values
     eval_cache.row_jac_start[1] = 1
     for i in 1:num_cons
-        eval_cache.row_jac_start[i + 1] += eval_cache.row_jac_start[i]
+       eval_cache.row_jac_start[i + 1] += eval_cache.row_jac_start[i]
     end
 
     # storage for the current row
@@ -791,20 +794,35 @@ function _setup_matrices!(dest::Optimizer)
         end
     end
 
+    # extracting the constant from linear expressions
+    test_x = zeros(Float64, num_vars)
+
+    MOI.eval_constraint(dest.evaluator, eval_cache.cached_g, test_x)
+    for c in 1:num_cons
+        if isempty(nonlinear_vars_in_row[c])
+            dest.inner.model_data.constraint_rhs[c] -= eval_cache.cached_g[c]
+        end
+    end
+
+
     # --- Lagrangian Hessian Setup ---
     # We query the evaluator directly now
 
     # cleaning the hessian structure to make it lower triangular
-    lower_tri_hess = unique([t[1] >= t[2] ? t : (t[2], t[1]) for t in raw_hess_str])
+    raw_normalized = [t[1] >= t[2] ? t : (t[2], t[1]) for t in raw_hess_str]
 
-    # sorting the hessian such that it is first rows, then columns
-    hess_perm = sortperm(1:length(lower_tri_hess), by = i -> (lower_tri_hess[i][2], lower_tri_hess[i][1]))
+    unique_pairs = unique(raw_normalized)
+    sort!(unique_pairs, by = x -> (x[2], x[1]))
 
-    dest.inner.hess_structure.rows = Cint[lower_tri_hess[i][1] - 1 for i in hess_perm]
-    dest.inner.hess_structure.cols = Cint[lower_tri_hess[i][2] - 1 for i in hess_perm]
+    pair_to_idx = Dict(pair => i for (i, pair) in enumerate(unique_pairs))
+
+    hessian_map = [pair_to_idx[p] for p in raw_normalized]
+
+    dest.inner.hess_structure.rows = Cint[p[1] - 1 for p in unique_pairs]
+    dest.inner.hess_structure.cols = Cint[p[2] - 1 for p in unique_pairs]
 
     # storing the permutation mapping and allocating memory for the hessian evaluation
-    eval_cache.hess_perm = hess_perm
+    eval_cache.hessian_map = hessian_map
 
     # setting up a constraint map between CONOPT indices and MOI
     constraints = dest.nlp_model.constraints
@@ -855,7 +873,6 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
 
     show(src)
-    show(src.model)
     print(src.model)
 
     setup_model(dest, src)
