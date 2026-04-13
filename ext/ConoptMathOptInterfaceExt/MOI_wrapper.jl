@@ -880,6 +880,8 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
 
     start_time = time()
 
+    print_model_representation(dest.inner.jac_structure, dest.inner.model_data)
+
     result = Conopt.solve!(dest.inner)
 
     dest.solve_time = time() - start_time
@@ -901,6 +903,99 @@ function MOI.optimize!(model::Optimizer)
     model.solve_time = time() - start_time
 
     return
+end
+
+
+###
+### Utilities
+###
+
+function print_model_representation(jac, data)
+    n_vars = data.num_variables
+    n_cons = data.num_constraints
+
+    # 1. Prepare row-major storage
+    # Store linear terms as (col_index, coefficient)
+    linear_terms = [Tuple{Int, Float64}[] for _ in 1:n_cons]
+    # Store nonlinear variables as a list of col_indices
+    nonlinear_vars = [Int[] for _ in 1:n_cons]
+
+    # 2. Transpose column-major Jacobian into row-major lists
+    for col in 1:n_vars
+        # Assuming jac.start is 0-based (C-style array pointers)
+        idx_start = jac.start[col] + 1
+        idx_end = jac.start[col + 1]
+
+        for i in idx_start:idx_end
+            # Assuming jac.index is 0-based
+            row = jac.index[i] + 1
+            val = jac.values[i]
+            is_nl = (jac.nlflag[i] == 1)
+
+            if is_nl
+                push!(nonlinear_vars[row], col)
+            else
+                push!(linear_terms[row], (col, val))
+            end
+        end
+    end
+
+    # 3. Define the constraint sense mapping
+    sense_map = Dict(
+        0 => "==",
+        1 => ">=",
+        2 => "<=",
+        3 => "free"
+    )
+
+    # 4. Build and print the representation row by row
+    println()
+    println("--- Algebraically Extracted Model ---")
+    for row in 1:n_cons
+        # Mark the objective row
+        if row == data.objective_row_index
+            prefix = "[OBJECTIVE] c$row:"
+        else
+            prefix = "c$row:"
+        end
+
+        # Sort the terms so x1 appears before x2, etc.
+        sort!(linear_terms[row], by = x -> x[1])
+        sort!(nonlinear_vars[row])
+
+        parts = String[]
+
+        # Append linear parts
+        for (col, val) in linear_terms[row]
+            # Format the coefficient nicely (e.g., skip 1.0 or -1.0 if desired,
+            # but keeping it simple here for clarity)
+            push!(parts, "$(val)x$col")
+        end
+
+        # Append nonlinear part
+        if !isempty(nonlinear_vars[row])
+            args = join(["x$v" for v in nonlinear_vars[row]], ", ")
+            push!(parts, "f$row($args)")
+        end
+
+        # Construct the Left-Hand Side string
+        if isempty(parts)
+            lhs_str = "0.0"
+        else
+            lhs_str = join(parts, " + ")
+            # Clean up "+ -" to just "-" for readability
+            lhs_str = replace(lhs_str, "+ -" => "- ")
+        end
+
+        # Construct the Right-Hand Side
+        rhs_val = data.constraint_rhs[row]
+        sense_str = get(sense_map, data.constraint_type[row], "??")
+
+        # Print the final constraint string
+        println(rpad(prefix, 20), "$lhs_str $sense_str $rhs_val")
+    end
+    println("-------------------------------------")
+    println()
 end
 
 
