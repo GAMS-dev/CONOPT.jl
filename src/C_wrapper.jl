@@ -481,9 +481,9 @@ function _FDEval_cb(x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numj
     end
 
     if mode == 2 || mode == 3
-        jac_res = unsafe_wrap(Array{Float64}, jac, numvar; own=false)
-        jac_ind = unsafe_wrap(Array{Cint}, jacnum, numjac; own=false)
-        model.callbacks.eval_jac(rowno, jac_ind, jac_res)
+        jac_vals = unsafe_wrap(Array{Float64}, jac, numvar; own=false)
+        jac_idx = unsafe_wrap(Array{Cint}, jacnum, numjac; own=false)
+        model.callbacks.eval_jac(rowno, jac_idx, jac_vals)
     end
 
     return 0
