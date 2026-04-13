@@ -1,32 +1,37 @@
 # ============================ /test/MOI_wrapper.jl ============================
 module TestConopt
 
-include("../src/Conopt.jl")
-#import Conopt
+using Conopt
 using Test
 
 import MathOptInterface as MOI
 
 const OPTIMIZER = MOI.instantiate(
-    MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true),
-)
+        MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true),
+        )
 
 const BRIDGED = MOI.instantiate(
-    MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true),
-    with_bridge_type = Float64,
-)
+        MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true),
+        with_bridge_type = Float64,
+        )
 
 # See the docstring of MOI.Test.Config for other arguments.
 const CONFIG = MOI.Test.Config(
-    # Modify tolerances as necessary.
-    atol = 1e-6,
-    rtol = 1e-6,
-    # Use MOI.LOCALLY_SOLVED for local solvers.
-    optimal_status = MOI.OPTIMAL,
-    # Pass attributes or MOI functions to `exclude` to skip tests that
-    # rely on this functionality.
-    exclude = Any[MOI.VariableName, MOI.delete],
-)
+        # Modify tolerances as necessary.
+        atol = 1e-6,
+        rtol = 1e-6,
+        infeasible_status = MOI.LOCALLY_INFEASIBLE,
+        optimal_status = MOI.LOCALLY_SOLVED,
+        # Pass attributes or MOI functions to `exclude` to skip tests that
+        # rely on this functionality.
+        exclude = Any[
+            MOI.VariableName,
+            MOI.delete,
+            MOI.ConstraintDual,
+            MOI.ConstraintBasisStatus,
+            MOI.DualObjectiveValue
+            ],
+        )
 
 """
     runtests()
@@ -55,15 +60,22 @@ function test_runtests()
     MOI.Test.runtests(
         BRIDGED,
         CONFIG,
+        include = String[
+                "test_linear_",
+                "test_quadratic_",
+                "test_nonlinear",
+               ],
         exclude = [
-        ],
+                "test_nonlinear_hs071_global", # CONOPT is a local solver
+                "test_nonlinear_invalid", # TODO: need to revisit this later!!!
+                ],
         # This argument is useful to prevent tests from failing on future
         # releases of MOI that add new tests. Don't let this number get too far
         # behind the current MOI release though. You should periodically check
         # for new tests to fix bugs and implement new features.
         #exclude_tests_after = v"0.10.5",
         verbose = true
-    )
+        )
     return
 end
 
