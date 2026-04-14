@@ -271,6 +271,8 @@ function initialize!(model::ConoptModel)
     # tell CONOPT that our function evaluations include the linear terms
     coierror += LibConopt.COIDEF_FVincLin(ptr, 1)
 
+    coierror += LibConopt.COIDEF_EmptyCol(ptr, 1)
+
     coierror += register_callbacks(model)
 
     coierror += LibConopt.COIDEF_UsrMem(ptr, pointer_from_objref(model))

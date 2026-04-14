@@ -100,7 +100,6 @@ const _FUNCTIONS = Union{
     MOI.ScalarAffineFunction{Float64},
     MOI.ScalarQuadraticFunction{Float64},
     MOI.ScalarNonlinearFunction,
-    MOI.VectorOfVariables,
 }
 
 
@@ -540,26 +539,12 @@ function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
 end
 
 
-function _get_objective_constant(model::Optimizer)::Float64
-    #F = MOI.get(model, MOI.ObjectiveFunctionType())
 
-    #if F == MOI.VariableIndex
-        ## e.g., @objective(model, Min, x) -> No constant
-        #return 0.0
+"""
+    function _set_objective_sense!(model::Optimizer, sense::MOI.OptimizationSense)
 
-    #elseif F == MOI.ScalarAffineFunction{Float64} || F == MOI.ScalarQuadraticFunction{Float64}
-        # e.g., @objective(model, Min, 2x + 5) -> Constant is 5.0
-        obj_func = MOI.get(model, MOI.ObjectiveFunction())
-        return obj_func.constant
-
-    #else
-        ## If it's a purely nonlinear objective managed by the NLPBlock,
-        ## the constant is baked into the evaluator tree.
-        #return 0.0
-    #end
-end
-
-
+    converts the objective sense from MOI to Conopt
+"""
 function _set_objective_sense!(model::Optimizer, sense::MOI.OptimizationSense)
     if sense == MOI.MIN_SENSE
         model.inner.model_data.sense = Conopt.ObjSense_Minimize
@@ -712,16 +697,18 @@ function _setup_matrices!(dest::Optimizer)
     jac_vals = zeros(total_jac_nnz)
     MOI.eval_constraint_jacobian(dest.evaluator, jac_vals, dest.inner.model_data.variable_primal_start)
 
+    # sorting the jacobian so that it is in a column-major format
     p_jac_colwise = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][2], raw_jac_str[i][1]))
     sorted_rows = Cint[raw_jac_str[i][1] - 1 for i in p_jac_colwise]
     sorted_cols = Int[raw_jac_str[i][2] for i in p_jac_colwise]
     sorted_jac_vals = jac_vals[p_jac_colwise]
 
-    # storing the jacobian structure
+    # storing the jacobian structure.
     dest.inner.jac_structure.start = zeros(Cint, num_vars + 1)
     for c in sorted_cols
         dest.inner.jac_structure.start[c + 1] += 1
     end
+
     for i in 1:num_vars
         dest.inner.jac_structure.start[i + 1] += dest.inner.jac_structure.start[i]
     end
@@ -836,6 +823,33 @@ function _setup_matrices!(dest::Optimizer)
     return
 end
 
+
+function check_supported_attributes(dest::MOI.ModelLike, src::MOI.ModelLike)
+    # Check Model attributes
+    for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
+        if !MOI.supports(dest, attr)
+            throw(MOI.UnsupportedAttribute(attr))
+        end
+    end
+
+    # Check Variable attributes
+    for attr in MOI.get(src, MOI.ListOfVariableAttributesSet())
+        if !MOI.supports(dest, attr, MOI.VariableIndex)
+            throw(MOI.UnsupportedAttribute(attr))
+        end
+    end
+
+    # Check Constraint attributes
+    for (F, S) in MOI.get(src, MOI.ListOfConstraintTypesPresent())
+        for attr in MOI.get(src, MOI.ListOfConstraintAttributesSet{F, S}())
+            if !MOI.supports(dest, attr, MOI.ConstraintIndex{F, S})
+                throw(MOI.UnsupportedAttribute(attr))
+            end
+        end
+    end
+end
+
+
 function setup_model(dest::Optimizer, src::MOI.ModelLike)
     # storing the variables, bounds and primal starts
     _setup_variables!(dest, src)
@@ -873,7 +887,9 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
 
     show(src)
-    print(src.model)
+    print(src)
+
+    check_supported_attributes(dest, src)
 
     setup_model(dest, src)
     setup_inner(dest)
@@ -1067,6 +1083,10 @@ MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solve_time
 
 # the primal status - the status of the primal solution
 function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
+    if Conopt.is_empty(model.inner)
+        return MOI.NO_SOLUTION
+    end
+
     MOI.check_result_index_bounds(model, attr)
 
     model_status = model.inner.solution_status.model_status
@@ -1087,6 +1107,10 @@ end
 # NOTE: this is currently being taken from the model status. However, we could infer this result
 # from the dual solution.
 function MOI.get(model::Optimizer, attr::MOI.DualStatus)
+    if Conopt.is_empty(model.inner)
+        return MOI.NO_SOLUTION
+    end
+
     MOI.check_result_index_bounds(model, attr)
 
     model_status = model.inner.solution_status.model_status

@@ -61,9 +61,13 @@ function test_runtests()
         BRIDGED,
         CONFIG,
         include = String[
-                "test_linear_",
-                "test_quadratic_",
-                "test_nonlinear",
+                 "test_linear_",
+                 "test_quadratic_",
+                 "test_nonlinear",
+                 "test_model_",
+                 "test_solver_",
+                 "test_variable_",
+                 "test_objective_",
                ],
         exclude = [
                 "test_nonlinear_hs071_global", # CONOPT is a local solver
