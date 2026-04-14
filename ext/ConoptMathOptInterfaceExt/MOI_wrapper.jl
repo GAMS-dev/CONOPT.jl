@@ -164,7 +164,7 @@ function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
     major = Ref{Cint}(0)
     minor = Ref{Cint}(0)
     patch = Ref{Cint}(0)
-    LibConopt.COIGET_Version(major, minor, patch)
+    Conopt.LibConopt.COIGET_Version(major, minor, patch)
     return string(major[], ".", minor[], ".", patch[])
 end
 
@@ -201,11 +201,11 @@ end
 MOI.supports(::Optimizer, ::MOI.TimeLimitSec) = true
 
 function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, value::Real)
-    if value == mode
+    if value == model.timelimit
         return
     end
     model.timelimit = value
-    coierror = LibConopt.COIDEF_ResLim(model.cntvect[], value);
+    coierror = Conopt.LibConopt.COIDEF_ResLim(model.inner.cntvect[], value);
     if coierror != 0
         error("could not set CONOPT time limit")
     end
@@ -218,7 +218,7 @@ function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, ::Nothing)
         return
     end
     model.timelimit = 1e+06
-    coierror = LibConopt.COIDEF_ResLim(model.cntvect[], 1e+06);
+    coierror = Conopt.LibConopt.COIDEF_ResLim(model.inner.cntvect[], 1e+06);
     if coierror != 0
         error("could not reset CONOPT time limit")
     end
@@ -245,14 +245,14 @@ MOI.supports(::Optimizer, ::MOI.RawOptimizerAttribute) = true
     options callback. However, it also intercepts additional options, such as "LogLevel"
 """
 function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
-    option_name = attr.name
+    option_name = param.name
 
     if option_name == "LogLevel"
         log_level_value = Int(value)
         if log_level_value < 1 || log_level_value > 4
-            @error "Invalid value for LogLevel <" * log_level_value * ">. It must be between 1 and 4"
+            @error "Invalid value for LogLevel <$log_level_value>. It must be between 1 and 4"
         end
-        model.log_level = Int(value)
+        model.inner.log_level = Int(value)
     else
         model.params[param.name] = value
     end
@@ -261,7 +261,7 @@ function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
 end
 
 function MOI.get(model::Optimizer, param::MOI.RawOptimizerAttribute)
-    if !haskey(model.options, param.name)
+    if !haskey(model.params, param.name)
         msg = "RawOptimizerAttribute with name $(param.name) is not already set."
         throw(MOI.GetAttributeNotAllowed(param, msg))
     end
@@ -272,7 +272,7 @@ end
 MOI.supports(::Optimizer, ::MOI.NumberOfThreads) = true
 
 function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, value::Integer)
-    coierror = LibConopt.COIDEF_ThreadS(model.cntvect[], value);
+    coierror = Conopt.LibConopt.COIDEF_ThreadS(model.inner.cntvect[], value);
     if coierror != 0
         error("could not set CONOPT number of threads")
     end
@@ -281,7 +281,7 @@ function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, value::Integer)
 end
 
 function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, ::Nothing)
-    coierror = LibConopt.COIDEF_ThreadS(model.cntvect[], 0);
+    coierror = Conopt.LibConopt.COIDEF_ThreadS(model.inner.cntvect[], 0);
     if coierror != 0
         error("could not reset CONOPT number of threads")
     end
@@ -865,6 +865,9 @@ end
 function check_supported_attributes(dest::MOI.ModelLike, src::MOI.ModelLike)
     # Check Model attributes
     for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
+        if attr isa MOI.Name
+            continue # Ignore variable names
+        end
         if !MOI.supports(dest, attr)
             throw(MOI.UnsupportedAttribute(attr))
         end
@@ -872,6 +875,9 @@ function check_supported_attributes(dest::MOI.ModelLike, src::MOI.ModelLike)
 
     # Check Variable attributes
     for attr in MOI.get(src, MOI.ListOfVariableAttributesSet())
+        if attr isa MOI.VariableName
+            continue # Ignore variable names
+        end
         if !MOI.supports(dest, attr, MOI.VariableIndex)
             throw(MOI.UnsupportedAttribute(attr))
         end
@@ -880,6 +886,9 @@ function check_supported_attributes(dest::MOI.ModelLike, src::MOI.ModelLike)
     # Check Constraint attributes
     for (F, S) in MOI.get(src, MOI.ListOfConstraintTypesPresent())
         for attr in MOI.get(src, MOI.ListOfConstraintAttributesSet{F, S}())
+            if attr isa MOI.ConstraintName
+                continue # Ignore variable names
+            end
             if !MOI.supports(dest, attr, MOI.ConstraintIndex{F, S})
                 throw(MOI.UnsupportedAttribute(attr))
             end
