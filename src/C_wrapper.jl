@@ -468,7 +468,9 @@ function _FDEvalIni_cb(
     x = unsafe_wrap(Array, x_ptr, n)
     rowlist = unsafe_wrap(Array, rowlist_ptr, listsize)
 
-    model.callbacks.eval_f_ini(x, rowlist, mode)
+    errcnt = model.callbacks.eval_f_ini(model, x, rowlist, mode)
+
+    unsafe_store!(errcnt_ptr, errcnt)
 
     return 0
 end
@@ -478,14 +480,14 @@ function _FDEval_cb(x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numj
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
     if mode == 1 || mode == 3
-        value = model.callbacks.eval_f(rowno)
+        value = model.callbacks.eval_f(model, rowno)
         unsafe_store!(g, value)
     end
 
     if mode == 2 || mode == 3
         jac_vals = unsafe_wrap(Array{Float64}, jac, numvar; own=false)
         jac_idx = unsafe_wrap(Array{Cint}, jacnum, numjac; own=false)
-        model.callbacks.eval_jac(rowno, jac_idx, jac_vals)
+        model.callbacks.eval_jac(model, rowno, jac_idx, jac_vals)
     end
 
     return 0
@@ -521,7 +523,9 @@ function _SDLagrVal_cb(x, u, rowno, colno, value, nodrv, numvar, numcons, numhes
     hess_col = unsafe_wrap(Array{Cint}, colno, numhess; own=false)
     hess_val = unsafe_wrap(Array{Float64}, value, numhess; own=false)
 
-    model.callbacks.eval_hess(x_val, u_val, hess_row, hess_col, hess_val)
+    retcode = model.callbacks.eval_hess(model, x_val, u_val, hess_row, hess_col, hess_val)
+
+    unsafe_store!(nodrv, retcode)
 
     return 0
 end

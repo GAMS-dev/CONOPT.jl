@@ -16,7 +16,6 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 
     # NLP data
     nlp_model::Union{Nothing,MOI.Nonlinear.Model} # specialised NLP model structure
-    evaluator::Union{Nothing, MOI.Nonlinear.Evaluator}
     ad_backend::MOI.Nonlinear.AbstractAutomaticDifferentiation # automatic differentiation backend
 
     # variable mapping MOI to Conopt
@@ -40,7 +39,6 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             1e+15,                  # CONOPT's default Lim_Variable parameter
 
             MOI.Nonlinear.Model(),  # NLP model
-            nothing, # empty evaluator
             MOI.Nonlinear.SparseReverseMode(), # automatic differentiation
 
             MOI.VariableIndex[],        # list of variable indices
@@ -54,6 +52,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 end
 
 mutable struct EvaluationCache
+    evaluator::Union{Nothing, MOI.Nonlinear.Evaluator}
     row_jac_start::Vector{Int}  # start indices for the row_jac mapping
     row_jac_idx::Vector{Int}    # the indices for the row_jac_mapping
     cached_g::Vector{Float64}   # store for the function values computed by the evaluator
@@ -64,8 +63,9 @@ mutable struct EvaluationCache
     u_buffer::Vector{Float64}       # a buffer for the multipliers when mapping between CONOPT and MOI
     cached_hess::Vector{Float64}    # store of the hessian values, used as a buffer in the evaluation method
 
-    function EvaluationCache(num_constraints::Int, num_jac_nnz::Int, num_hess_nnz::Int)
+    function EvaluationCache(evaluator::MOI.Nonlinear.Evaluator, num_constraints::Int, num_jac_nnz::Int, num_hess_nnz::Int)
         return new(
+            evaluator,
             zeros(num_constraints + 1),
             zeros(num_jac_nnz),
             zeros(num_constraints),
@@ -79,13 +79,28 @@ mutable struct EvaluationCache
 
     function EvaluationCache()
         return new(
-            Vector{Int}[],
+            nothing,
+            Int[],
             Float64[],
             Float64[],
             Int[],
             Float64[]
         )
     end
+end
+
+function empty_cache!(cache)
+    eval_cache = cache::EvaluationCache
+    empty!(eval_cache.row_jac_start)
+    empty!(eval_cache.row_jac_idx)
+    empty!(eval_cache.cached_g)
+    empty!(eval_cache.cached_jac)
+    empty!(eval_cache.hessian_map)
+    empty!(eval_cache.cons_map)
+    empty!(eval_cache.u_buffer)
+    empty!(eval_cache.cached_hess)
+
+    return cache
 end
 
 const _SETS = Union{
@@ -124,7 +139,9 @@ function MOI.empty!(model::Optimizer)
     model.inner = Conopt.ConoptModel()
 
     model.nlp_model = MOI.Nonlinear.Model()
-    model.evaluator = nothing
+    if !isnothing(model.inner.user_data)
+        empty_cache!(model.inner.user_data)
+    end
 
     empty!(model.variable_indices)
     empty!(model.var_index_to_pos)
@@ -415,27 +432,38 @@ MOI.hessian_lagrangian_structure(::_EmptyNLPEvaluator) = Tuple{Int64,Int64}[]
 MOI.eval_constraint_jacobian(::_EmptyNLPEvaluator, J, x) = nothing
 MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
 
-function _eval_f_ini(model::Optimizer, x::Vector{Float64}, rowlist::Vector{Cint}, mode::Cint)
-    eval_cache = model.inner.user_data::EvaluationCache
 
-    # The rowlist can be ignored if we evaluate and cache everything.
-    if mode == 1 || mode == 3
-        MOI.eval_constraint(model.evaluator, eval_cache.cached_g, x)
+function _eval_f_ini(model::Conopt.ConoptModel, x::Vector{Float64}, rowlist::Vector{Cint}, mode::Cint)::Cint
+    eval_cache = model.user_data::EvaluationCache
+
+    try
+        # The rowlist can be ignored if we evaluate and cache everything.
+        if mode == 1 || mode == 3
+            MOI.eval_constraint(eval_cache.evaluator, eval_cache.cached_g, x)
+        end
+        if mode == 2 || mode == 3
+            MOI.eval_constraint_jacobian(eval_cache.evaluator, eval_cache.cached_jac, x)
+        end
+    catch e
+        if e isa DomainError || e isa DivideError || e isa OverflowError
+            return 1
+        else
+            showerror(stderr, e)
+            println(stderr, "\nUnexpected error in evaluation.")
+        end
     end
-    if mode == 2 || mode == 3
-        MOI.eval_constraint_jacobian(model.evaluator, eval_cache.cached_jac, x)
-    end
-    return
+
+    return 0
 end
 
-function _eval_f(model::Optimizer, rownum::Cint)
-    eval_cache = model.inner.user_data::EvaluationCache
+function _eval_f(model::Conopt.ConoptModel, rownum::Cint)
+    eval_cache = model.user_data::EvaluationCache
 
     return eval_cache.cached_g[rownum + 1]
 end
 
-function _eval_jac(model::Optimizer, rownum::Cint, jac_idx::Vector{Cint}, jac_vals::Vector{Float64})
-    eval_cache = model.inner.user_data::EvaluationCache
+function _eval_jac(model::Conopt.ConoptModel, rownum::Cint, jac_idx::Vector{Cint}, jac_vals::Vector{Float64})
+    eval_cache = model.user_data::EvaluationCache
 
     start = eval_cache.row_jac_start[rownum + 1]
     for i in 1:length(jac_idx)
@@ -445,11 +473,11 @@ function _eval_jac(model::Optimizer, rownum::Cint, jac_idx::Vector{Cint}, jac_va
     return
 end
 
-function _eval_hess(model::Optimizer, x::Vector{Float64}, u::Vector{Float64}, rowno::Vector{Cint},
-        colno::Vector{Cint}, value::Vector{Float64})
-    eval_cache = model.inner.user_data::EvaluationCache
-    n_vars = model.inner.model_data.num_variables
-    n_cons = model.inner.model_data.num_constraints
+function _eval_hess(model::Conopt.ConoptModel, x::Vector{Float64}, u::Vector{Float64}, rowno::Vector{Cint},
+        colno::Vector{Cint}, value::Vector{Float64})::Cint
+    eval_cache = model.user_data::EvaluationCache
+    n_vars = model.model_data.num_variables
+    n_cons = model.model_data.num_constraints
     nnz_hess = length(eval_cache.hessian_map)
 
     # mapping the multipliers between CONOPT and MOI
@@ -459,7 +487,17 @@ function _eval_hess(model::Optimizer, x::Vector{Float64}, u::Vector{Float64}, ro
 
     # calling MOI to compute numerical values
     # NOTE: CONOPT includes the objective in the constraint matrix
-    MOI.eval_hessian_lagrangian(model.evaluator, eval_cache.cached_hess, x, 0.0, eval_cache.u_buffer)
+    try
+        MOI.eval_hessian_lagrangian(eval_cache.evaluator, eval_cache.cached_hess, x, 0.0, eval_cache.u_buffer)
+    catch e
+        if e isa DomainError || e isa DivideError || e isa OverflowError
+            return 1
+        else
+            showerror(stderr, e)
+            println(stderr, "\nUnexpected error in evaluation.")
+            return 1 # possibly have a different error code
+        end
+    end
 
     # mapping the values from the MOI order to CONOPT order via hessian_map
     fill!(value, 0.0)
@@ -471,7 +509,7 @@ function _eval_hess(model::Optimizer, x::Vector{Float64}, u::Vector{Float64}, ro
         value[hess_idx] += hess_val
     end
 
-    return nothing
+    return 0
 end
 
 
@@ -667,9 +705,9 @@ end
     and identify the structure of the Hessian.
 """
 function _setup_evaluator!(dest::Optimizer, src::MOI.ModelLike)
-    dest.evaluator = MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices)
-    MOI.initialize(dest.evaluator, [:Jac, :Hess])
-    return
+    evaluator = MOI.Nonlinear.Evaluator(dest.nlp_model, dest.ad_backend, dest.variable_indices)
+    MOI.initialize(evaluator, [:Jac, :Hess])
+    return evaluator
 end
 
 
@@ -678,24 +716,24 @@ end
 
     setup up the jacobian and hessian matrices in a form that can be supplied to Conopt
 """
-function _setup_matrices!(dest::Optimizer)
+function _setup_matrices!(dest::Optimizer, evaluator::MOI.Nonlinear.Evaluator)
     num_vars = dest.inner.model_data.num_variables
     num_cons = dest.inner.model_data.num_constraints
 
     # extracting the jacobian and hessian structure
-    raw_jac_str = MOI.jacobian_structure(dest.evaluator)
-    raw_hess_str = MOI.hessian_lagrangian_structure(dest.evaluator)
+    raw_jac_str = MOI.jacobian_structure(evaluator)
+    raw_hess_str = MOI.hessian_lagrangian_structure(evaluator)
 
     # storing the sizes of the jacobian and hessian
     total_jac_nnz = length(raw_jac_str)
     total_hess_nnz = length(raw_hess_str)
 
     # initialising the evaluation cache
-    eval_cache = EvaluationCache(num_cons, total_jac_nnz, total_hess_nnz)
+    eval_cache = EvaluationCache(evaluator, num_cons, total_jac_nnz, total_hess_nnz)
 
     # creating the matrix structure from the jacobian
     jac_vals = zeros(total_jac_nnz)
-    MOI.eval_constraint_jacobian(dest.evaluator, jac_vals, dest.inner.model_data.variable_primal_start)
+    MOI.eval_constraint_jacobian(evaluator, jac_vals, dest.inner.model_data.variable_primal_start)
 
     # sorting the jacobian so that it is in a column-major format
     p_jac_colwise = sortperm(1:total_jac_nnz, by = i -> (raw_jac_str[i][2], raw_jac_str[i][1]))
@@ -722,7 +760,7 @@ function _setup_matrices!(dest::Optimizer)
     for r in 1:num_cons
         # Note: MOI does not have a standard `hessian_constraint_structure` in its public API.
         # Assuming this is a custom JuMP internal function you are using, it now applies cleanly to all rows.
-        hess_struct_r = MOI.hessian_constraint_structure(dest.evaluator, r)
+        hess_struct_r = MOI.hessian_constraint_structure(evaluator, r)
         for (c1, c2) in hess_struct_r
             push!(nonlinear_vars_in_row[r], c1)
             push!(nonlinear_vars_in_row[r], c2)
@@ -784,7 +822,7 @@ function _setup_matrices!(dest::Optimizer)
     # extracting the constant from linear expressions
     test_x = zeros(Float64, num_vars)
 
-    MOI.eval_constraint(dest.evaluator, eval_cache.cached_g, test_x)
+    MOI.eval_constraint(evaluator, eval_cache.cached_g, test_x)
     for c in 1:num_cons
         if isempty(nonlinear_vars_in_row[c])
             dest.inner.model_data.constraint_rhs[c] -= eval_cache.cached_g[c]
@@ -859,16 +897,16 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
     _setup_constraints!(dest, src)
 
     # initializing the evaluator for the non-linear expressions
-    _setup_evaluator!(dest, src)
+    evaluator = _setup_evaluator!(dest, src)
 
     # constructing the Jacobian and Hessian matrices.
-    _setup_matrices!(dest)
+    _setup_matrices!(dest, evaluator)
 
     # setting the callbacks
-    dest.inner.callbacks.eval_f_ini = (x, rowlist, mode) -> _eval_f_ini(dest, x, rowlist, mode)
-    dest.inner.callbacks.eval_f = (rownum::Cint) -> _eval_f(dest, rownum)
-    dest.inner.callbacks.eval_jac = (rownum::Cint, jac_idx, jac_vals) -> _eval_jac(dest, rownum, jac_idx, jac_vals)
-    dest.inner.callbacks.eval_hess = (x, u, rowno, colno, value) -> _eval_hess(dest, x, u, rowno, colno, value)
+    dest.inner.callbacks.eval_f_ini = _eval_f_ini
+    dest.inner.callbacks.eval_f = _eval_f
+    dest.inner.callbacks.eval_jac = _eval_jac
+    dest.inner.callbacks.eval_hess = _eval_hess
 
     return
 end
