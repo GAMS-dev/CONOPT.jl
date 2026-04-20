@@ -397,9 +397,6 @@ function MOI.get(
     attr::MOI.VariablePrimalStart,
     vi::MOI.VariableIndex,
 )
-    if _is_parameter(vi)
-        throw(MOI.GetAttributeNotAllowed(attr, "Variable is a Parameter"))
-    end
     MOI.throw_if_not_valid(model, vi)
     return model.inner.model_data.variable_primal_start[_column(model, vi)]
 end
@@ -410,9 +407,6 @@ function MOI.set(
     vi::MOI.VariableIndex,
     value::Union{Real,Nothing},
 )
-    if _is_parameter(vi)
-        throw(MOI.SetAttributeNotAllowed(attr, "Variable is a Parameter"))
-    end
     MOI.throw_if_not_valid(model, vi)
     model.inner.model_data.variable_primal_start[_column(model, vi)] = value
     return

@@ -71,7 +71,6 @@ function test_runtests()
                ],
         exclude = [
                 "test_nonlinear_hs071_global", # CONOPT is a local solver
-                "test_nonlinear_invalid", # TODO: need to revisit this later!!!
                 ],
         # This argument is useful to prevent tests from failing on future
         # releases of MOI that add new tests. Don't let this number get too far
@@ -80,6 +79,7 @@ function test_runtests()
         #exclude_tests_after = v"0.10.5",
         verbose = true
         )
+
     return
 end
 
@@ -158,7 +158,7 @@ function test_RawOptimizerAttribute()
     attr = MOI.RawOptimizerAttribute("my_custom_tol")
     MOI.set(model, attr, 1e-5)
     @test MOI.get(model, attr) == 1e-5
-    @test model.params["my_custom_tol"] == 1e-5
+    @test model.options["my_custom_tol"] == 1e-5
 
     # Test getting an unset parameter throws an error
     bad_attr = MOI.RawOptimizerAttribute("does_not_exist")
@@ -235,6 +235,154 @@ function test_Objective_Sense_Mappings()
 
     MOI.set(model, MOI.ObjectiveSense(), MOI.FEASIBILITY_SENSE)
     @test model.inner.model_data.sense == Conopt.ObjSense_Feasibility
+    return
+end
+
+
+function test_Option_Callback_Logic()
+    model = Conopt.Optimizer()
+
+    # 1. Set different types of parameters
+    MOI.set(model, MOI.RawOptimizerAttribute("Tol_Feas_Max"), 1e-7)  # Float
+    MOI.set(model, MOI.RawOptimizerAttribute("Lim_Iteration"), 500)    # Int
+    MOI.set(model, MOI.RawOptimizerAttribute("Flg_SLPMode"), true) # Bool
+
+    # 2. Prepare mock C-pointers using Ref
+    # These simulate the Ptr{Cdouble}, Ptr{Cint}, etc. arguments
+    rval_ref = Ref{Cdouble}(0.0)
+    ival_ref = Ref{Cint}(0)
+    lval_ref = Ref{Cint}(0)
+    name_buf = zeros(Int8, 64) # Buffer for the C-string name
+
+    # 3. Synchronize params to model.inner (as done in setup_model)
+    # This is necessary because the callback reads from model.inner
+    for (name, value) in model.options
+        model.inner.options[name] = value
+    end
+
+    # 4. Test the first parameter (Note: Dict order is random, so we check which one we got)
+    # We pass pointer_from_objref(model.inner) to simulate 'usrmem'
+    ncall = 1
+    while ncall < 5 # limit the loop so we don't accidentally get an infinite loop.
+        rc = Conopt._Option_cb(
+                Int32(ncall),
+                Base.unsafe_convert(Ptr{Cdouble}, rval_ref),
+                Base.unsafe_convert(Ptr{Cint}, ival_ref),
+                Base.unsafe_convert(Ptr{Cint}, lval_ref),
+                pointer(name_buf),
+                pointer_from_objref(model.inner)
+               )
+
+        @test rc == 0
+        param_name = unsafe_string(pointer(name_buf))
+
+        if param_name == ""
+            break
+        end
+
+        if param_name == "Tol_Feas_Max"
+            @test rval_ref[] == 1e-7
+        elseif param_name == "Lim_Iteration"
+            @test ival_ref[] == 500
+        elseif param_name == "Flg_SLPMode"
+            @test lval_ref[] == 1
+        end
+
+        ncall += 1
+    end
+
+    return
+end
+
+function test_Option_Persistence()
+    model = Conopt.Optimizer()
+    MOI.set(model, MOI.RawOptimizerAttribute("TestOption"), 123)
+
+    # This should clear the variables/constraints but keep the dictionary
+    MOI.empty!(model)
+
+    @test haskey(model.options, "TestOption")
+    @test MOI.get(model, MOI.RawOptimizerAttribute("TestOption")) == 123
+end
+
+function test_VariablePrimalStart()
+    model = Conopt.Optimizer()
+
+    # We need to mock a variable being added so the internal mappings exist
+    # (Usually MOI.add_variable handles this, but since we are testing the getter/setter
+    # directly, we set up the mock arrays)
+    push!(model.variable_indices, MOI.VariableIndex(1))
+    push!(model.var_index_to_pos, 1)
+    push!(model.inner.model_data.variable_primal_start, 0.0)
+
+    vi = MOI.VariableIndex(1)
+
+    @test MOI.supports(model, MOI.VariablePrimalStart(), typeof(vi))
+
+    # Test setting a starting value
+    MOI.set(model, MOI.VariablePrimalStart(), vi, 3.14)
+    @test MOI.get(model, MOI.VariablePrimalStart(), vi) == 3.14
+
+    # Check that it actually went to the internal C-struct
+    @test model.inner.model_data.variable_primal_start[1] == 3.14
+    return
+end
+
+function test_ResultCount_and_Bounds()
+    model = Conopt.Optimizer()
+
+    # Before solve, ResultCount should be 0
+    @test MOI.get(model, MOI.ResultCount()) == 0
+
+    # Asking for the objective before solving should throw a ResultIndexBoundsError
+    @test_throws MOI.ResultIndexBoundsError MOI.get(model, MOI.ObjectiveValue())
+
+    # Mock an existing problem
+    model.inner.model_data.num_variables = 1
+
+    # Mock a solve
+    model.inner.solution_status.status_stored = true
+    model.inner.solution_status.objective = 42.0
+
+    # Now ResultCount should be 1 and ObjectiveValue should work
+    @test MOI.get(model, MOI.ResultCount()) == 1
+    @test MOI.get(model, MOI.ObjectiveValue()) == 42.0
+    return
+end
+
+function test_IsValid()
+    model = Conopt.Optimizer()
+
+    # Mock adding a variable and a constraint
+    vi = MOI.VariableIndex(1)
+    push!(model.var_index_to_pos, 1)
+
+    ci = MOI.ConstraintIndex{MOI.VariableIndex, MOI.LessThan{Float64}}(1)
+    model.con_index_to_pos[ci] = 1
+
+    # Check validity
+    @test MOI.is_valid(model, vi)
+    @test MOI.is_valid(model, ci)
+
+    # Check invalidity
+    bad_vi = MOI.VariableIndex(99)
+    bad_ci = MOI.ConstraintIndex{MOI.VariableIndex, MOI.LessThan{Float64}}(99)
+
+    @test !MOI.is_valid(model, bad_vi)
+    @test !MOI.is_valid(model, bad_ci)
+    return
+end
+
+function test_SolverVersion()
+    model = Conopt.Optimizer()
+
+    version_str = MOI.get(model, MOI.SolverVersion())
+
+    # Verify it returns a String
+    @test version_str isa String
+
+    # Verify it roughly looks like a version number (e.g., contains dots)
+    @test occursin(".", version_str)
     return
 end
 
