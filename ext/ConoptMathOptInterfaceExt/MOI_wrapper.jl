@@ -520,11 +520,11 @@ end
 MOI.supports_incremental_interface(::Optimizer) = false
 
 """
-    function _update_variable_bounds(model_data::ModelData, var_index::Int; lower::Float64 = -Inf, upper::Float64 = Inf)
+    function _update_variable_bounds!(model_data::ModelData, var_index::Int; lower::Float64 = -Inf, upper::Float64 = Inf)
 
     updates the variable bounds and also updates the primal start to fit between the bounds
 """
-function _update_variable_bounds(model_data::Conopt.ModelData, var_index::Int; lower::Float64 = -Inf, upper::Float64 = Inf)
+function _update_variable_bounds!(model_data::Conopt.ModelData, var_index::Int; lower::Float64 = -Inf, upper::Float64 = Inf)
     if lower > -Inf
         model_data.variable_lower[var_index] = lower
     end
@@ -620,13 +620,13 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
                 cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
                 pos = dest.var_index_to_pos[cons_function.value]
                 if set <: MOI.GreaterThan
-                    _update_variable_bounds(dest.inner.model_data, pos, lower=MOI.constant(cons_set))
+                    _update_variable_bounds!(dest.inner.model_data, pos, lower=MOI.constant(cons_set))
                 elseif set <: MOI.LessThan
-                    _update_variable_bounds(dest.inner.model_data, pos, upper=MOI.constant(cons_set))
+                    _update_variable_bounds!(dest.inner.model_data, pos, upper=MOI.constant(cons_set))
                 elseif set <: MOI.EqualTo
-                    _update_variable_bounds(dest.inner.model_data, pos, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
+                    _update_variable_bounds!(dest.inner.model_data, pos, lower=MOI.constant(cons_set), upper=MOI.constant(cons_set))
                 elseif set <: MOI.Interval
-                    _update_variable_bounds(dest.inner.model_data, pos, lower=cons_set.lower, upper=cons_set.upper)
+                    _update_variable_bounds!(dest.inner.model_data, pos, lower=cons_set.lower, upper=cons_set.upper)
                 end
             end
         elseif f == MOI.VectorOfVariables
@@ -636,7 +636,7 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
                     cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
                     for (i, var_ix) in enumerate(cons_function.variables)
                         pos = dest.var_index_to_pos[var_ix.value]
-                        _update_variable_bounds(dest.inner.model_data, pos, lower=cons_set.lower[i], upper=cons_set.upper[i])
+                        _update_variable_bounds!(dest.inner.model_data, pos, lower=cons_set.lower[i], upper=cons_set.upper[i])
                     end
                 end
             end
