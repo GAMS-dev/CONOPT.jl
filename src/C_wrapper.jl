@@ -187,7 +187,9 @@ end
 mutable struct ConoptModel
     cntvect::Ref{Ptr{Cvoid}}    # pointer to the CONOPT control vector
     silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
-    log_level::Int               # the log level for the Conopt output. This matches the C++ verbosity levels
+    log_level::Int              # the log level for the Conopt output. This matches the C++ verbosity levels
+    options::Dict{String,Any}    # solver options
+    option_offset::Int           # offset for invalid options
 
     # problem Structures
     model_data::ModelData       # a cache of the model data
@@ -212,6 +214,8 @@ mutable struct ConoptModel
             cntvect,
             false,
             2,
+            Dict{String,Any}(),  # options
+            0,
             ModelData(),
             JacobianStructure(),
             HessianStructure(),
@@ -530,6 +534,71 @@ function _SDLagrVal_cb(x, u, rowno, colno, value, nodrv, numvar, numcons, numhes
     return 0
 end
 
+function _Option_cb(ncall::Cint, rval::Ptr{Cdouble}, ival::Ptr{Cint}, lval::Ptr{Cint}, name_ptr::Ptr{Cchar}, usrmem::Ptr{Cvoid})::Cint
+    # Safely recover the model
+    model = unsafe_pointer_to_objref(usrmem)::ConoptModel
+
+    # Extract keys to make the Dict indexable
+    option_keys = collect(keys(model.options))
+
+    current_name = ""
+    val = 0.0
+    while true
+        # Check if we have looped through all options
+        idx = Int(ncall) + 1 + model.option_offset
+        if idx < 1 || idx > length(option_keys)
+            # if there are no more options, then we return a blank name
+            unsafe_store!(Ptr{UInt8}(name_ptr), 0x00, 1)
+
+            # Return a non-zero code to tell CONOPT there are no more options
+            return Cint(0)
+        end
+
+        # Get the current option name and value
+        current_name = option_keys[idx]
+        val = model.options[current_name]
+
+        # checking that the value type is valid.
+        if val isa AbstractFloat || val isa Bool || val isa Integer
+            break
+        end
+
+        @warn "Unsupported option type for $current_name: $(typeof(val)). Skipping."
+        model.option_offset += 1
+    end
+
+    # this shouldn't happen, but adding a check to avoid passing an empty name. If this happens, we
+    # stop the option processing.
+    if current_name == ""
+        # if there are no more options, then we return a blank name
+        unsafe_store!(Ptr{UInt8}(name_ptr), 0x00, 1)
+
+        return Cint(0)
+    end
+
+    # Write the option name into the C-string pointer
+    # We must write the bytes sequentially and append a null terminator (0x00) for C
+    for (i, byte) in enumerate(transcode(UInt8, current_name))
+        unsafe_store!(Ptr{UInt8}(name_ptr), byte, i)
+    end
+    unsafe_store!(Ptr{UInt8}(name_ptr), 0x00, length(current_name) + 1)
+
+    # Check the type of the value and route it to the correct C-pointer
+    if val isa AbstractFloat
+        unsafe_store!(rval, Cdouble(val))
+    elseif val isa Bool
+        # C does not have native booleans in the same way; it expects 1 or 0
+        unsafe_store!(lval, Cint(val ? 1 : 0))
+    elseif val isa Integer
+        unsafe_store!(ival, Cint(val))
+    else
+        @warn "Unsupported option type for $current_name: $(typeof(val)). Skipping."
+        return Cint(1) # Return an error code
+    end
+
+    return Cint(0) # Success, move to the next option
+end
+
 function register_callbacks(model::ConoptModel)
     coierror = 0
 
@@ -581,6 +650,10 @@ function register_callbacks(model::ConoptModel)
     SDLagrVal_c = @cfunction(_SDLagrVal_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
                                                    Ptr{Cdouble}, Ptr{Cint}, Cint, Cint, Cint, Ptr{Cvoid}))
     coierror += LibConopt.COIDEF_2DLagrVal(ptr, SDLagrVal_c)
+
+    Option_c = @cfunction(_Option_cb, Cint, (Cint, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
+                                             Ptr{Cchar}, Ptr{Cvoid}))
+    coierror += LibConopt.COIDEF_Option(ptr, Option_c)
 
     return coierror
 end

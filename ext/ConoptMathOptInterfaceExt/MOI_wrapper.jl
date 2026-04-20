@@ -8,8 +8,9 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     inner::Conopt.ConoptModel
     timelimit::Real             # time limit in seconds
     name::String                # name of the model
-    params::Dict{String,Any}    # solver parameters
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
+    options::Dict{String, Any}  # options stored locally in the Optimizer.
+                                # These are copied across to the ConoptModel
 
     # parameters
     lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded
@@ -34,8 +35,8 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             Conopt.ConoptModel(),
             1e+06,                  # time limit
             "Model",                # model name
-            Dict{String,String}(),  # parameters
             0,                      # default number of threads
+            Dict{String, Any}(),    # options
             1e+15,                  # CONOPT's default Lim_Variable parameter
 
             MOI.Nonlinear.Model(),  # NLP model
@@ -133,8 +134,6 @@ function MOI.is_empty(model::Optimizer)
 end
 
 function MOI.empty!(model::Optimizer)
-    empty!(model.params)
-
     # destroying the existing Conopt model, which will call free on the control vector
     model.inner = Conopt.ConoptModel()
 
@@ -254,18 +253,18 @@ function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
         end
         model.inner.log_level = Int(value)
     else
-        model.params[param.name] = value
+        model.options[param.name] = value
     end
 
     return
 end
 
 function MOI.get(model::Optimizer, param::MOI.RawOptimizerAttribute)
-    if !haskey(model.params, param.name)
+    if !haskey(model.options, param.name)
         msg = "RawOptimizerAttribute with name $(param.name) is not already set."
         throw(MOI.GetAttributeNotAllowed(param, msg))
     end
-    return model.params[param.name]
+    return model.options[param.name]
 end
 
 # number of threads
@@ -518,6 +517,21 @@ end
 ###
 
 MOI.supports_incremental_interface(::Optimizer) = false
+
+
+"""
+    function _setup_model_options(dest::Optimizer)
+
+    copies the parameters from the Optimizer struct to the ConoptModel struct. This is needed
+    because only the ConoptModel is passed as the user data to Conopt. Further, when calling
+    optimize!, the options stored in ConoptModel are removed. Having this copy allows options
+    to be set prior to the optimize! call.
+"""
+function _setup_options!(dest::Optimizer)
+    for (key, val) in dest.options
+        dest.inner.options[key] = val
+    end
+end
 
 """
     function _update_variable_bounds!(model_data::ModelData, var_index::Int; lower::Float64 = -Inf, upper::Float64 = Inf)
@@ -910,6 +924,9 @@ function setup_model(dest::Optimizer, src::MOI.ModelLike)
 
     # constructing the Jacobian and Hessian matrices.
     _setup_matrices!(dest, evaluator)
+
+    # copying the optimisation from the Optimizer to the ConoptModel
+    _setup_options!(dest)
 
     # setting the callbacks
     dest.inner.callbacks.eval_f_ini = _eval_f_ini
