@@ -188,6 +188,8 @@ mutable struct ConoptModel
     cntvect::Ref{Ptr{Cvoid}}    # pointer to the CONOPT control vector
     silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
     log_level::Int              # the log level for the Conopt output. This matches the C++ verbosity levels
+    time_limit::Float64         # the solver time limit
+    threads::Int                # the number of threads to use
     options::Dict{String,Any}    # solver options
     option_offset::Int           # offset for invalid options
 
@@ -214,6 +216,8 @@ mutable struct ConoptModel
             cntvect,
             false,
             2,
+            1e+06,
+            0,
             Dict{String,Any}(),  # options
             0,
             ModelData(),
@@ -240,6 +244,16 @@ end
 function is_empty(model::ConoptModel)
     return model.model_data.num_variables == 0 &&
         model.model_data.num_constraints == 0
+end
+
+function set_options!(model::ConoptModel)
+    coierror = 0
+    ptr = model.cntvect[]
+
+    coierror += LibConopt.COIDEF_ResLim(ptr, model.time_limit)
+    coierror += LibConopt.COIDEF_ThreadS(ptr, model.threads)
+
+    return coierror
 end
 
 function initialize!(model::ConoptModel)
@@ -277,7 +291,9 @@ function initialize!(model::ConoptModel)
 
     coierror += LibConopt.COIDEF_EmptyCol(ptr, 1)
 
-    coierror += register_callbacks(model)
+    coierror += register_callbacks!(model)
+
+    coierror += set_options!(model)
 
     coierror += LibConopt.COIDEF_UsrMem(ptr, pointer_from_objref(model))
 
@@ -599,7 +615,8 @@ function _Option_cb(ncall::Cint, rval::Ptr{Cdouble}, ival::Ptr{Cint}, lval::Ptr{
     return Cint(0) # Success, move to the next option
 end
 
-function register_callbacks(model::ConoptModel)
+
+function register_callbacks!(model::ConoptModel)
     coierror = 0
 
     ptr = model.cntvect[]

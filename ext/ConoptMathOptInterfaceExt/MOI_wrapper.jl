@@ -6,9 +6,11 @@ const CONOPT_INF = 1e15
 
 mutable struct Optimizer <: MOI.AbstractOptimizer
     inner::Conopt.ConoptModel
-    timelimit::Real             # time limit in seconds
     name::String                # name of the model
+    time_limit::Real            # time limit in seconds
+    log_level::Int              # the log level
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
+    silent::Bool                # should the output be disabled
     options::Dict{String, Any}  # options stored locally in the Optimizer.
                                 # These are copied across to the ConoptModel
 
@@ -33,9 +35,11 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     function Optimizer()
         model = new(
             Conopt.ConoptModel(),
-            1e+06,                  # time limit
             "Model",                # model name
+            1e+06,                  # time limit
+            2,                      # the default log level
             0,                      # default number of threads
+            false,                  # silent
             Dict{String, Any}(),    # options
             1e+15,                  # CONOPT's default Lim_Variable parameter
 
@@ -104,6 +108,10 @@ function empty_cache!(cache)
     return cache
 end
 
+###
+### Some defines used for specifying the supported constraints
+###
+
 const _SETS = Union{
     MOI.GreaterThan{Float64},
     MOI.LessThan{Float64},
@@ -118,6 +126,35 @@ const _FUNCTIONS = Union{
     MOI.ScalarNonlinearFunction,
 }
 
+
+###
+### helper methods for the variable and constraint indices
+###
+
+_column(model::Optimizer, vi::MOI.VariableIndex) = model.var_index_to_pos[vi.value]
+_row(model::Optimizer, ci::MOI.ConstraintIndex) = model.con_index_to_pos[ci]
+
+
+function MOI.is_valid(model::Optimizer, vi::MOI.VariableIndex)
+    return 1 <= vi.value <= length(model.var_index_to_pos) &&
+           model.var_index_to_pos[vi.value] > 0
+end
+
+function MOI.is_valid(
+    model::Optimizer,
+    ci::MOI.ConstraintIndex{F, S}
+) where {F, S}
+    # If it's an algebraic constraint, check the row dictionary
+    return haskey(model.con_index_to_pos, ci)
+end
+
+function MOI.is_valid(
+    model::Optimizer,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex, S}
+) where {S}
+    # A variable bound is valid if the underlying variable is valid.
+    return MOI.is_valid(model, MOI.VariableIndex(ci.value))
+end
 
 
 ###
@@ -170,6 +207,7 @@ end
 # raw solver
 MOI.get(model::Optimizer, ::MOI.RawSolver) = model.inner.cntvect
 
+
 # model name
 MOI.supports(::Optimizer, ::MOI.Name) = true
 
@@ -183,106 +221,66 @@ function MOI.set(model::Optimizer, ::MOI.Name, value::String)
     return
 end
 
+
 # silent
 MOI.supports(::Optimizer, ::MOI.Silent) = true
 
 function MOI.get(model::Optimizer, ::MOI.Silent)
-    return model.inner.silent
+    return model.silent
 end
 
 function MOI.set(model::Optimizer, ::MOI.Silent, value::Bool)
-    model.inner.silent = value
+    model.silent = value
     return
 end
 
+
 # time limit
-# TODO: consider whether this should be moved to ConoptModel
 MOI.supports(::Optimizer, ::MOI.TimeLimitSec) = true
 
 function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, value::Real)
-    if value == model.timelimit
+    if value == model.time_limit
         return
     end
-    model.timelimit = value
-    coierror = Conopt.LibConopt.COIDEF_ResLim(model.inner.cntvect[], value);
-    if coierror != 0
-        error("could not set CONOPT time limit")
-    end
+    model.time_limit = value
     return
 end
 
 function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, ::Nothing)
     # removing the time limit -> set the time limit to CONOPT's default
-    if 1e+06 == model.timelimit
+    if 1e+06 == model.time_limit
         return
     end
-    model.timelimit = 1e+06
-    coierror = Conopt.LibConopt.COIDEF_ResLim(model.inner.cntvect[], 1e+06);
-    if coierror != 0
-        error("could not reset CONOPT time limit")
-    end
+    model.time_limit = 1e+06
     return
 end
 
-MOI.get(model::Optimizer, ::MOI.TimeLimitSec) = model.timelimit
+MOI.get(model::Optimizer, ::MOI.TimeLimitSec) = model.time_limit
+
 
 # objective and solution limits - currently no way to set these in CONOPT
 MOI.supports(::Optimizer, ::MOI.ObjectiveLimit) = false
 MOI.supports(::Optimizer, ::MOI.SolutionLimit) = false
 
+
 # node limit - CONOPT isn't a branch and bound solver, so this makes no sense
 MOI.supports(::Optimizer, ::MOI.NodeLimit) = false
 
-# solver attributes
-MOI.supports(::Optimizer, ::MOI.RawOptimizerAttribute) = true
-
-
-"""
-    function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
-
-    method for setting raw attributes the Conopt. This is used to pass attributed through to the
-    options callback. However, it also intercepts additional options, such as "LogLevel"
-"""
-function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
-    option_name = param.name
-
-    if option_name == "LogLevel"
-        log_level_value = Int(value)
-        if log_level_value < 1 || log_level_value > 4
-            @error "Invalid value for LogLevel <$log_level_value>. It must be between 1 and 4"
-        end
-        model.inner.log_level = Int(value)
-    else
-        model.options[param.name] = value
-    end
-
-    return
-end
-
-function MOI.get(model::Optimizer, param::MOI.RawOptimizerAttribute)
-    if !haskey(model.options, param.name)
-        msg = "RawOptimizerAttribute with name $(param.name) is not already set."
-        throw(MOI.GetAttributeNotAllowed(param, msg))
-    end
-    return model.options[param.name]
-end
 
 # number of threads
 MOI.supports(::Optimizer, ::MOI.NumberOfThreads) = true
 
 function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, value::Integer)
-    coierror = Conopt.LibConopt.COIDEF_ThreadS(model.inner.cntvect[], value);
-    if coierror != 0
-        error("could not set CONOPT number of threads")
+    if value == model.threads
+        return
     end
     model.threads = value
     return
 end
 
 function MOI.set(model::Optimizer, ::MOI.NumberOfThreads, ::Nothing)
-    coierror = Conopt.LibConopt.COIDEF_ThreadS(model.inner.cntvect[], 0);
-    if coierror != 0
-        error("could not reset CONOPT number of threads")
+    if 0 == model.threads
+        return
     end
     model.threads = 0
     return
@@ -290,100 +288,13 @@ end
 
 MOI.get(model::Optimizer, ::MOI.NumberOfThreads) = model.threads
 
+
 # gap tolerances not supported by CONOPT
 MOI.supports(::Optimizer, ::MOI.AbsoluteGapTolerance) = false
 MOI.supports(::Optimizer, ::MOI.RelativeGapTolerance) = false
 
-###
-### indicate which constraints CONOPT supports
-###
 
-# TODO implement support for these
-# support constraints of the form x in S, where S = {x | l <= f(x) <= u}
-#function MOI.supports_constraint(
-#    ::Optimizer,
-#    ::Type{MOI.VectorOfVariables},
-#    ::Type{MOI.VectorNonlinearOracle{Float64}},
-#)
-#    return true
-#end
-
-function MOI.supports_constraint(
-    ::Optimizer,
-    ::Type{<:_FUNCTIONS},
-    ::Type{<:_SETS}
-)
-    return true
-end
-
-function MOI.supports_constraint(
-    ::Optimizer,
-    ::Type{MOI.VectorOfVariables},
-    ::Type{MOI.HyperRectangle{Float64}},
-)
-    return true
-end
-
-function MOI.supports_constraint(
-    ::Optimizer,
-    ::Type{MOI.VariableIndex},
-    ::Type{MOI.Interval{Float64}}
-)
-    return true
-end
-
-# Objective
-
-function MOI.supports(
-    ::Optimizer,
-    ::Union{
-        MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}},
-        MOI.ObjectiveFunction{MOI.ScalarQuadraticFunction{Float64}},
-        MOI.ObjectiveFunction{MOI.ScalarNonlinearFunction},
-    },
-)
-    return true
-end
-
-function MOI.supports(
-    ::Optimizer,
-    ::MOI.ObjectiveSense
-)
-    return true
-end
-
-function MOI.set(model::Optimizer, ::MOI.ObjectiveSense, sense::MOI.OptimizationSense)
-    _set_objective_sense!(model, sense)
-    return
-end
-
-_column(model::Optimizer, vi::MOI.VariableIndex) = model.var_index_to_pos[vi.value]
-_row(model::Optimizer, ci::MOI.ConstraintIndex) = model.con_index_to_pos[ci]
-
-### starting values of primal variables
-
-
-function MOI.is_valid(model::Optimizer, vi::MOI.VariableIndex)
-    return 1 <= vi.value <= length(model.var_index_to_pos) &&
-           model.var_index_to_pos[vi.value] > 0
-end
-
-function MOI.is_valid(
-    model::Optimizer,
-    ci::MOI.ConstraintIndex{F, S}
-) where {F, S}
-    # If it's an algebraic constraint, check the row dictionary
-    return haskey(model.con_index_to_pos, ci)
-end
-
-function MOI.is_valid(
-    model::Optimizer,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex, S}
-) where {S}
-    # A variable bound is valid if the underlying variable is valid.
-    return MOI.is_valid(model, MOI.VariableIndex(ci.value))
-end
-
+# starting values of primal variables
 function MOI.supports(
     ::Optimizer,
     ::MOI.VariablePrimalStart,
@@ -412,6 +323,90 @@ function MOI.set(
     return
 end
 
+
+# solver attributes
+MOI.supports(::Optimizer, ::MOI.RawOptimizerAttribute) = true
+
+function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
+    option_name = param.name
+
+    if option_name == "LogLevel"
+        log_level_value = Int(value)
+        if log_level_value < 1 || log_level_value > 4
+            @error "Invalid value for LogLevel <$log_level_value>. It must be between 1 and 4"
+        end
+        model.inner.log_level = Int(value)
+    else
+        model.options[param.name] = value
+    end
+
+    return
+end
+
+function MOI.get(model::Optimizer, param::MOI.RawOptimizerAttribute)
+    if !haskey(model.options, param.name)
+        msg = "RawOptimizerAttribute with name $(param.name) is not already set."
+        throw(MOI.GetAttributeNotAllowed(param, msg))
+    end
+    return model.options[param.name]
+end
+
+
+###
+### indicate which constraints CONOPT supports
+###
+
+function MOI.supports_constraint(
+    ::Optimizer,
+    ::Type{<:_FUNCTIONS},
+    ::Type{<:_SETS}
+)
+    return true
+end
+
+function MOI.supports_constraint(
+    ::Optimizer,
+    ::Type{MOI.VectorOfVariables},
+    ::Type{MOI.HyperRectangle{Float64}},
+)
+    return true
+end
+
+function MOI.supports_constraint(
+    ::Optimizer,
+    ::Type{MOI.VariableIndex},
+    ::Type{MOI.Interval{Float64}}
+)
+    return true
+end
+
+###
+### indicate the types of objectives that CONOPT supports
+###
+
+function MOI.supports(
+    ::Optimizer,
+    ::Union{
+        MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}},
+        MOI.ObjectiveFunction{MOI.ScalarQuadraticFunction{Float64}},
+        MOI.ObjectiveFunction{MOI.ScalarNonlinearFunction},
+    },
+)
+    return true
+end
+
+function MOI.supports(
+    ::Optimizer,
+    ::MOI.ObjectiveSense
+)
+    return true
+end
+
+function MOI.set(model::Optimizer, ::MOI.ObjectiveSense, sense::MOI.OptimizationSense)
+    _set_objective_sense!(model, sense)
+    return
+end
+
 ###
 ### _EmptyNLPEvaluator
 ###
@@ -426,6 +421,20 @@ MOI.eval_constraint_jacobian(::_EmptyNLPEvaluator, J, x) = nothing
 MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
 
 
+###
+### callback functions for the evaluation of functions, Jacobian and Hessian
+###
+
+
+"""
+    function _eval_f_ini(model::Conopt.ConoptModel, x::Vector{Float64}, rowlist::Vector{Cint}, mode::Cint)
+
+    callback function that is executed immediately prior to the function and derivative evaluations.
+    This method is used to execute the MOI evaluators for the function and derivatives. The results
+    are stored in the EvaluationCache, and then retrieved in the _eval_f and _eval_jac callback functions.
+    This caching is needed because MOI evaluates all constraints or the full Jacobian at once; however,
+    CONOPT only needs these row-by-row.
+"""
 function _eval_f_ini(model::Conopt.ConoptModel, x::Vector{Float64}, rowlist::Vector{Cint}, mode::Cint)::Cint
     eval_cache = model.user_data::EvaluationCache
 
@@ -449,12 +458,24 @@ function _eval_f_ini(model::Conopt.ConoptModel, x::Vector{Float64}, rowlist::Vec
     return 0
 end
 
+
+"""
+    function _eval_f(model::Conopt.ConoptModel, rownum::Cint)
+
+    callback function for returning the cached values for a row's function evaluation.
+"""
 function _eval_f(model::Conopt.ConoptModel, rownum::Cint)
     eval_cache = model.user_data::EvaluationCache
 
     return eval_cache.cached_g[rownum + 1]
 end
 
+
+"""
+    function _eval_jac(model::Conopt.ConoptModel, rownum::Cint, jac_idx::Vector{Cint}, jac_vals::Vector{Float64})
+
+    callback function for returning the cached values for a row's derivative evaluation.
+"""
 function _eval_jac(model::Conopt.ConoptModel, rownum::Cint, jac_idx::Vector{Cint}, jac_vals::Vector{Float64})
     eval_cache = model.user_data::EvaluationCache
 
@@ -466,6 +487,15 @@ function _eval_jac(model::Conopt.ConoptModel, rownum::Cint, jac_idx::Vector{Cint
     return
 end
 
+
+"""
+    function _eval_hess(model::Conopt.ConoptModel, x::Vector{Float64}, u::Vector{Float64}, rowno::Vector{Cint},
+        colno::Vector{Cint}, value::Vector{Float64})
+
+    callback function for returning the Hessian of the Lagrangian. The EvaluationCache is used here
+    since it contains preallocated arrays for the Hessian evaluation. Additionally, a mapping between
+    MOI and CONOPT for the Hessian is stored in the EvaluationCache.
+"""
 function _eval_hess(model::Conopt.ConoptModel, x::Vector{Float64}, u::Vector{Float64}, rowno::Vector{Cint},
         colno::Vector{Cint}, value::Vector{Float64})::Cint
     eval_cache = model.user_data::EvaluationCache
@@ -514,7 +544,7 @@ MOI.supports_incremental_interface(::Optimizer) = false
 
 
 """
-    function _setup_model_options(dest::Optimizer)
+    function _setup_options(dest::Optimizer)
 
     copies the parameters from the Optimizer struct to the ConoptModel struct. This is needed
     because only the ConoptModel is passed as the user data to Conopt. Further, when calling
@@ -525,6 +555,12 @@ function _setup_options!(dest::Optimizer)
     for (key, val) in dest.options
         dest.inner.options[key] = val
     end
+
+    # writing specific options to the ConoptModel
+    dest.inner.time_limit = dest.time_limit
+    dest.inner.log_level = dest.log_level
+    dest.inner.threads = dest.threads
+    dest.inner.silent = dest.silent
 end
 
 """
@@ -722,7 +758,14 @@ end
 """
     function _setup_matrices!(dest::Optimizer)
 
-    setup up the jacobian and hessian matrices in a form that can be supplied to Conopt
+    setup up the jacobian and hessian matrices in a form that can be supplied to Conopt. This process
+    additionally involves defining mappings between the jacobian and hessian structures in the evaluator
+    to support the function and derivative evaluations.
+
+    Additionally, the constant from linear expressions is extracted and subtracted from the RHS of
+    the constraint. This is needed because CONOPT doesn't evaluate purely linear expressions, since
+    these are computed internally. As such, if the constant is included in the expression, and not
+    on the RHS, then CONOPT will not evaluate the linear expressions correctly.
 """
 function _setup_matrices!(dest::Optimizer, evaluator::MOI.Nonlinear.Evaluator)
     num_vars = dest.inner.model_data.num_variables
@@ -870,6 +913,12 @@ function _setup_matrices!(dest::Optimizer, evaluator::MOI.Nonlinear.Evaluator)
 end
 
 
+"""
+    function check_supported_attributes(dest::MOI.ModelLike, src::MOI.ModelLike)
+
+    checks whether all attributes of a model are supported by CONOPT. If there is an unsupported
+    attribute, then the solve is aborted.
+"""
 function check_supported_attributes(dest::MOI.ModelLike, src::MOI.ModelLike)
     # Check Model attributes
     for attr in MOI.get(src, MOI.ListOfModelAttributesSet())
@@ -905,7 +954,24 @@ function check_supported_attributes(dest::MOI.ModelLike, src::MOI.ModelLike)
 end
 
 
-function setup_model(dest::Optimizer, src::MOI.ModelLike)
+"""
+    function setup_model!(dest::Optimizer, src::MOI.ModelLike)
+
+    copies the model from MOI to CONOPT structures. The ConoptModel is setup by writing model data
+    from the MOI model into CONOPT related data structures. This follows the steps:
+    - extract the variable information, including bounds and primal starts.
+    - extract the constraints. This process also adds the constraints to the MOI.Nonlinear structure
+      to be used by the evaluator. Additionally, the objective is extracted as added to CONOPT as
+      a constraint.
+    - initialising the evaluator with the extracted NLP model.
+    - defining the matrices for CONOPT. These are the Jacobian and Hessian matrices. Additionally,
+      mappings are generated that map the indices between the jacobian and hessian evaluations and
+      the structure stored in CONOPT.
+    - copy the options across from the Optimizer to the ConoptModel.
+
+    Finally, the callback methods are registered with the ConoptModel.
+"""
+function setup_model!(dest::Optimizer, src::MOI.ModelLike)
     # storing the variables, bounds and primal starts
     _setup_variables!(dest, src)
 
@@ -933,13 +999,29 @@ end
 
 
 
-function setup_inner(model::Optimizer)
+"""
+    function setup_inner!(model::Optimizer)
+
+    this calls all of the initialisation steps for CONOPT, such as registering the problem sizes,
+    options and callback methods.
+"""
+function setup_inner!(model::Optimizer)
     # TODO check if we need to recreate everything
 
     Conopt.initialize!(model.inner)
 end
 
-# this allows to use Utilities.CachingOptimizer to get the model; copies the model from src to dest
+
+###
+### Optimize
+###
+
+
+"""
+    function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
+
+    The main optimisation call for CONOPT.
+"""
 function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     MOI.empty!(dest)
     index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
@@ -949,8 +1031,8 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
 
     check_supported_attributes(dest, src)
 
-    setup_model(dest, src)
-    setup_inner(dest)
+    setup_model!(dest, src)
+    setup_inner!(dest)
 
     start_time = time()
 
@@ -963,20 +1045,249 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     return index_map, false
 end
 
+
 ###
-### Optimize and post-optimize functions
+### Post-optimisation methods
 ###
 
-function MOI.optimize!(model::Optimizer)
-    setup_inner(model)
+#ResultCount
 
-    start_time = time()
+# An iterate available if the model has been setup
+function MOI.get(model::Optimizer, ::MOI.ResultCount)
+    if Conopt.is_empty(model.inner)
+        return 0
+    end
 
-    result = Conopt.solve!(model.inner)
+    return model.inner.solution_status.status_stored ? 1 : 0
+end
 
-    model.solve_time = time() - start_time
 
-    return
+# termination status
+function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
+    # this may not actually be true, since it is possible that there is a crash.
+    if !model.inner.solution_status.status_stored
+        return MOI.OPTIMIZE_NOT_CALLED
+    end
+
+    model_status = model.inner.solution_status.model_status
+    solve_status = model.inner.solution_status.solve_status
+    if solve_status == Conopt.SolveStatus_Normal_Completion
+        if model_status == Conopt.ModelStatus_Optimal
+            #return MOI.OPTIMAL # we don't return OPTIMAL because CONOPT is considered a local solver
+            return MOI.LOCALLY_SOLVED
+        elseif model_status == Conopt.ModelStatus_Locally_Optimal
+            return MOI.LOCALLY_SOLVED
+        elseif model_status == Conopt.ModelStatus_Unbounded
+            return MOI.DUAL_INFEASIBLE
+        elseif model_status == Conopt.ModelStatus_Infeasible
+            return MOI.INFEASIBLE_OR_UNBOUNDED
+        elseif model_status == Conopt.ModelStatus_Locally_Infeasible
+            return MOI.LOCALLY_INFEASIBLE
+        # TODO: there are more model statuses. Need to see if they are needed.
+        end
+    elseif solve_status == Conopt.SolveStatus_Iteration_Interrupt
+        return MOI.ITERATION_LIMIT
+    elseif solve_status == Conopt.SolveStatus_Timelimit
+        return MOI.TIME_LIMIT
+    elseif solve_status == Conopt.SolveStatus_Terminated_Solver
+        return MOI.OTHER_LIMIT
+    elseif solve_status == Conopt.SolveStatus_Evaluation_Error_Limit
+        return MOI.OTHER_LIMIT
+    elseif solve_status == Conopt.SolveStatus_User_Interrupt
+        return MOI.INTERRUPTED
+    elseif solve_status == Conopt.SolveStatus_Error_Setup
+        return MOI.OTHER_ERROR
+    elseif solve_status == Conopt.SolveStatus_Solver_Error_NoPoint
+        return MOI.OTHER_ERROR
+    elseif solve_status == Conopt.SolveStatus_Solver_Error_Point
+        return MOI.OTHER_ERROR
+    elseif solve_status == Conopt.SolveStatus_General_System_Error
+        return MOI.OTHER_ERROR
+    elseif solve_status == Conopt.SolveStatus_Terminated_Quick_Mode
+        return MOI.OTHER_LIMIT
+    end
+    return MOI.OPTIMIZE_NOT_CALLED
+end
+
+# raw status string explaining why the solver stopped
+MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.inner.raw_status
+
+# solving time in seconds
+MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solve_time
+
+# the primal status - the status of the primal solution
+function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
+    if Conopt.is_empty(model.inner)
+        return MOI.NO_SOLUTION
+    end
+
+    MOI.check_result_index_bounds(model, attr)
+
+    model_status = model.inner.solution_status.model_status
+    if model_status == Conopt.ModelStatus_Optimal ||
+        model_status == Conopt.ModelStatus_Locally_Optimal
+        return MOI.FEASIBLE_POINT
+    elseif model_status == Conopt.ModelStatus_Infeasible ||
+        model_status == Conopt.ModelStatus_Locally_Infeasible ||
+        model_status == Conopt.ModelStatus_Intermediate_Infeasible
+        return MOI.INFEASIBLE_POINT
+    end
+
+    return MOI.UNKNOWN_RESULT_STATUS
+end
+
+
+# dual status - the status of the dual solution
+# NOTE: this is currently being taken from the model status. However, we could infer this result
+# from the dual solution.
+function MOI.get(model::Optimizer, attr::MOI.DualStatus)
+    if Conopt.is_empty(model.inner)
+        return MOI.NO_SOLUTION
+    end
+
+    MOI.check_result_index_bounds(model, attr)
+
+    model_status = model.inner.solution_status.model_status
+    if model_status == Conopt.ModelStatus_Optimal ||
+        model_status == Conopt.ModelStatus_Locally_Optimal
+        return MOI.FEASIBLE_POINT
+    elseif model_status == Conopt.ModelStatus_Unbounded
+        return MOI.NO_SOLUTION
+    end
+
+    return MOI.UNKNOWN_RESULT_STATUS
+end
+
+
+# the number of barrier iterations
+# NOTE: Conopt does perform the Barrier algorithm, so this is the iterations for the GRG algorithm.
+MOI.get(model::Optimizer, ::MOI.BarrierIterations) = model.inner.solution_status.iterations
+
+
+# the objective value
+function MOI.get(model::Optimizer, attr::MOI.ObjectiveValue)
+    MOI.check_result_index_bounds(model, attr)
+
+    return model.inner.solution_status.objective
+end
+
+
+# the variable primal solutions
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.VariablePrimal,
+    vi::MOI.VariableIndex,
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, vi)
+    return model.inner.solution_status.x_value[_column(model, vi)]
+end
+
+
+# the constraint primal solutions
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintPrimal,
+    ci::MOI.ConstraintIndex{F,<:_SETS},
+) where {
+    F<:Union{
+        MOI.ScalarAffineFunction{Float64},
+        MOI.ScalarQuadraticFunction{Float64},
+        MOI.ScalarNonlinearFunction,
+    },
+}
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    return model.inner.solution_status.y_value[_row(model, ci)]
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintPrimal,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex, S}
+) where {S}
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    col_pos = model.var_index_to_pos[ci.value]
+    return model.inner.solution_status.x_value[col_pos]
+end
+
+
+# the constraint dual solutions
+_dual_multiplier(model::Optimizer) = model.inner.model_data.sense == Conopt.ObjSense_Minimize ? 1.0 : -1.0
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{F,<:_SETS},
+) where {
+    F<:Union{
+        MOI.ScalarAffineFunction{Float64},
+        MOI.ScalarQuadraticFunction{Float64},
+        MOI.ScalarNonlinearFunction,
+    },
+}
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    s = _dual_multiplier(model)
+    return s * model.inner.solution_status.y_marginal[_row(model, ci)]
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.LessThan{Float64}},
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    if model.inner.solution_status.x_basis[ci.value] == 1
+        rc = model.inner.solution_status.x_marginal[ci.value]
+    else
+        rc = 0
+    end
+    return min(0.0, _dual_multiplier(model) * rc)
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.GreaterThan{Float64}},
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    if model.inner.solution_status.x_basis[ci.value] == 0
+        rc = model.inner.solution_status.x_marginal[ci.value]
+    else
+        rc = 0
+    end
+    return max(0.0, _dual_multiplier(model) * rc)
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.EqualTo{Float64}},
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    rc = model.inner.solution_status.x_marginal[ci.value]
+    return _dual_multiplier(model) * rc
+end
+
+function MOI.get(
+    model::Optimizer,
+    attr::MOI.ConstraintDual,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.Interval{Float64}},
+)
+    MOI.check_result_index_bounds(model, attr)
+    MOI.throw_if_not_valid(model, ci)
+    if model.inner.solution_status.x_basis[ci.value] == 0 ||
+        model.inner.solution_status.x_basis[ci.value] == 1
+        rc = model.inner.solution_status.x_marginal[ci.value]
+    else
+        rc = 0
+    end
+    return _dual_multiplier(model) * rc
 end
 
 
@@ -984,6 +1295,13 @@ end
 ### Utilities
 ###
 
+
+"""
+    function print_model_representation(jac, data)
+
+    a helper method to writing out a model representation. Only the linear components are written out.
+    The nonlinear components are written as functions, such as f(x, y, z). This is used for debugging.
+"""
 function print_model_representation(jac, data)
     n_vars = data.num_variables
     n_cons = data.num_constraints
@@ -1070,247 +1388,4 @@ function print_model_representation(jac, data)
     end
     println("-------------------------------------")
     println()
-end
-
-
-### MOI.ResultCount
-
-# Ipopt always has an iterate available.
-function MOI.get(model::Optimizer, ::MOI.ResultCount)
-    if Conopt.is_empty(model.inner)
-        return 0
-    end
-
-    return model.inner.solution_status.status_stored ? 1 : 0
-end
-
-
-# solve status
-
-function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
-    # this may not actually be true, since it is possible that there is a crash.
-    if !model.inner.solution_status.status_stored
-        return MOI.OPTIMIZE_NOT_CALLED
-    end
-
-    model_status = model.inner.solution_status.model_status
-    solve_status = model.inner.solution_status.solve_status
-    if solve_status == Conopt.SolveStatus_Normal_Completion
-        if model_status == Conopt.ModelStatus_Optimal
-            #return MOI.OPTIMAL # we don't return OPTIMAL because CONOPT is considered a local solver
-            return MOI.LOCALLY_SOLVED
-        elseif model_status == Conopt.ModelStatus_Locally_Optimal
-            return MOI.LOCALLY_SOLVED
-        elseif model_status == Conopt.ModelStatus_Unbounded
-            return MOI.DUAL_INFEASIBLE
-        elseif model_status == Conopt.ModelStatus_Infeasible
-            return MOI.INFEASIBLE_OR_UNBOUNDED
-        elseif model_status == Conopt.ModelStatus_Locally_Infeasible
-            return MOI.LOCALLY_INFEASIBLE
-        # TODO: there are more model statuses. Need to see if they are needed.
-        end
-    elseif solve_status == Conopt.SolveStatus_Iteration_Interrupt
-        return MOI.ITERATION_LIMIT
-    elseif solve_status == Conopt.SolveStatus_Timelimit
-        return MOI.TIME_LIMIT
-    elseif solve_status == Conopt.SolveStatus_Terminated_Solver
-        return MOI.OTHER_LIMIT
-    elseif solve_status == Conopt.SolveStatus_Evaluation_Error_Limit
-        return MOI.OTHER_LIMIT
-    elseif solve_status == Conopt.SolveStatus_User_Interrupt
-        return MOI.INTERRUPTED
-    elseif solve_status == Conopt.SolveStatus_Error_Setup
-        return MOI.OTHER_ERROR
-    elseif solve_status == Conopt.SolveStatus_Solver_Error_NoPoint
-        return MOI.OTHER_ERROR
-    elseif solve_status == Conopt.SolveStatus_Solver_Error_Point
-        return MOI.OTHER_ERROR
-    elseif solve_status == Conopt.SolveStatus_General_System_Error
-        return MOI.OTHER_ERROR
-    elseif solve_status == Conopt.SolveStatus_Terminated_Quick_Mode
-        return MOI.OTHER_LIMIT
-    end
-    return MOI.OPTIMIZE_NOT_CALLED
-end
-
-# raw status string explaining why the solver stopped
-MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.inner.raw_status
-
-# solving time in seconds
-MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solve_time
-
-# the primal status - the status of the primal solution
-function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
-    if Conopt.is_empty(model.inner)
-        return MOI.NO_SOLUTION
-    end
-
-    MOI.check_result_index_bounds(model, attr)
-
-    model_status = model.inner.solution_status.model_status
-    if model_status == Conopt.ModelStatus_Optimal ||
-        model_status == Conopt.ModelStatus_Locally_Optimal
-        return MOI.FEASIBLE_POINT
-    elseif model_status == Conopt.ModelStatus_Infeasible ||
-        model_status == Conopt.ModelStatus_Locally_Infeasible ||
-        model_status == Conopt.ModelStatus_Intermediate_Infeasible
-        return MOI.INFEASIBLE_POINT
-    end
-
-    return MOI.UNKNOWN_RESULT_STATUS
-end
-
-
-# the dual status - the status of the dual solution
-# NOTE: this is currently being taken from the model status. However, we could infer this result
-# from the dual solution.
-function MOI.get(model::Optimizer, attr::MOI.DualStatus)
-    if Conopt.is_empty(model.inner)
-        return MOI.NO_SOLUTION
-    end
-
-    MOI.check_result_index_bounds(model, attr)
-
-    model_status = model.inner.solution_status.model_status
-    if model_status == Conopt.ModelStatus_Optimal ||
-        model_status == Conopt.ModelStatus_Locally_Optimal
-        return MOI.FEASIBLE_POINT
-    elseif model_status == Conopt.ModelStatus_Unbounded
-        return MOI.NO_SOLUTION
-    end
-
-    return MOI.UNKNOWN_RESULT_STATUS
-end
-
-### MOI.BarrierIterations
-# NOTE: Conopt does perform the Barrier algorithm, so this is the iterations for the GRG algorithm.
-
-MOI.get(model::Optimizer, ::MOI.BarrierIterations) = model.inner.solution_status.iterations
-
-### MOI.ObjectiveValue
-
-function MOI.get(model::Optimizer, attr::MOI.ObjectiveValue)
-    MOI.check_result_index_bounds(model, attr)
-
-    return model.inner.solution_status.objective
-end
-
-### MOI.VariablePrimal
-
-function MOI.get(
-    model::Optimizer,
-    attr::MOI.VariablePrimal,
-    vi::MOI.VariableIndex,
-)
-    MOI.check_result_index_bounds(model, attr)
-    MOI.throw_if_not_valid(model, vi)
-    return model.inner.solution_status.x_value[_column(model, vi)]
-end
-
-
-### MOI.ConstraintPrimal
-
-function MOI.get(
-    model::Optimizer,
-    attr::MOI.ConstraintPrimal,
-    ci::MOI.ConstraintIndex{F,<:_SETS},
-) where {
-    F<:Union{
-        MOI.ScalarAffineFunction{Float64},
-        MOI.ScalarQuadraticFunction{Float64},
-        MOI.ScalarNonlinearFunction,
-    },
-}
-    MOI.check_result_index_bounds(model, attr)
-    MOI.throw_if_not_valid(model, ci)
-    return model.inner.solution_status.y_value[_row(model, ci)]
-end
-
-function MOI.get(
-    model::Optimizer,
-    attr::MOI.ConstraintPrimal,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex, S}
-) where {S}
-    MOI.check_result_index_bounds(model, attr)
-    MOI.throw_if_not_valid(model, ci)
-    col_pos = model.var_index_to_pos[ci.value]
-    return model.inner.solution_status.x_value[col_pos]
-end
-
-### MOI.ConstraintDual
-
-_dual_multiplier(model::Optimizer) = model.inner.model_data.sense == Conopt.ObjSense_Minimize ? 1.0 : -1.0
-
-function MOI.get(
-    model::Optimizer,
-    attr::MOI.ConstraintDual,
-    ci::MOI.ConstraintIndex{F,<:_SETS},
-) where {
-    F<:Union{
-        MOI.ScalarAffineFunction{Float64},
-        MOI.ScalarQuadraticFunction{Float64},
-        MOI.ScalarNonlinearFunction,
-    },
-}
-    MOI.check_result_index_bounds(model, attr)
-    MOI.throw_if_not_valid(model, ci)
-    s = _dual_multiplier(model)
-    return s * model.inner.solution_status.y_marginal[_row(model, ci)]
-end
-
-function MOI.get(
-    model::Optimizer,
-    attr::MOI.ConstraintDual,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.LessThan{Float64}},
-)
-    MOI.check_result_index_bounds(model, attr)
-    MOI.throw_if_not_valid(model, ci)
-    if model.inner.solution_status.x_basis[ci.value] == 1
-        rc = model.inner.solution_status.x_marginal[ci.value]
-    else
-        rc = 0
-    end
-    return min(0.0, _dual_multiplier(model) * rc)
-end
-
-function MOI.get(
-    model::Optimizer,
-    attr::MOI.ConstraintDual,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.GreaterThan{Float64}},
-)
-    MOI.check_result_index_bounds(model, attr)
-    MOI.throw_if_not_valid(model, ci)
-    if model.inner.solution_status.x_basis[ci.value] == 0
-        rc = model.inner.solution_status.x_marginal[ci.value]
-    else
-        rc = 0
-    end
-    return max(0.0, _dual_multiplier(model) * rc)
-end
-
-function MOI.get(
-    model::Optimizer,
-    attr::MOI.ConstraintDual,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.EqualTo{Float64}},
-)
-    MOI.check_result_index_bounds(model, attr)
-    MOI.throw_if_not_valid(model, ci)
-    rc = model.inner.solution_status.x_marginal[ci.value]
-    return _dual_multiplier(model) * rc
-end
-
-function MOI.get(
-    model::Optimizer,
-    attr::MOI.ConstraintDual,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.Interval{Float64}},
-)
-    MOI.check_result_index_bounds(model, attr)
-    MOI.throw_if_not_valid(model, ci)
-    if model.inner.solution_status.x_basis[ci.value] == 0 ||
-        model.inner.solution_status.x_basis[ci.value] == 1
-        rc = model.inner.solution_status.x_marginal[ci.value]
-    else
-        rc = 0
-    end
-    return _dual_multiplier(model) * rc
 end
