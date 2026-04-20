@@ -234,6 +234,12 @@ mutable struct ConoptModel
     end
 end
 
+
+"""
+    function _free_control_vector!(model::ConoptModel)
+
+    releases the control vector of CONOPT.
+"""
 function _free_control_vector!(model::ConoptModel)
     if model.cntvect[] != C_NULL
         LibConopt.COI_Free(model.cntvect)
@@ -241,11 +247,23 @@ function _free_control_vector!(model::ConoptModel)
     end
 end
 
+
+"""
+    function is_empty(model::ConoptModel)
+
+    checks if the model is empty.
+"""
 function is_empty(model::ConoptModel)
     return model.model_data.num_variables == 0 &&
         model.model_data.num_constraints == 0
 end
 
+
+"""
+    function set_options!(model::ConoptModel)
+
+    registers some specific options for CONOPT.
+"""
 function set_options!(model::ConoptModel)
     coierror = 0
     ptr = model.cntvect[]
@@ -256,6 +274,14 @@ function set_options!(model::ConoptModel)
     return coierror
 end
 
+
+
+"""
+    function initialize!(model::ConoptModel)
+
+    initialises CONOPT using the data stored in ConoptModel. This initialisation procedure defines
+    the problem sizes, optimisation direction, registers the callback methods and options.
+"""
 function initialize!(model::ConoptModel)
     if model.cntvect[] == C_NULL
         error("the Conopt control vector has not bee initialized")
@@ -276,7 +302,9 @@ function initialize!(model::ConoptModel)
     coierror += LibConopt.COIDEF_NumNlNz(ptr, sum(model.jac_structure.nlflag))
 
     # number of entries in the Hessian of the Lagrangian
-    coierror += LibConopt.COIDEF_NumHess(ptr, length(model.hess_structure.cols))
+    if length(model.hess_structure.cols) > 0
+        coierror += LibConopt.COIDEF_NumHess(ptr, length(model.hess_structure.cols))
+    end
 
     # objective information
     if model.model_data.sense == ObjSense_Maximize || model.model_data.sense == ObjSense_Minimize
@@ -303,9 +331,19 @@ function initialize!(model::ConoptModel)
 end
 
 
+"""
+    function solve!(model::ConoptModel)
+
+    the solve methods for CONOPT
+"""
 function solve!(model::ConoptModel)
     return LibConopt.COI_Solve(model.cntvect[])
 end
+
+
+###
+### The callback methods that are registered with CONOPT
+###
 
 """
     function _Message_cb(smsg, dmsg, nmsg, msgv, usrmem)
@@ -370,7 +408,13 @@ function _ErrMsg_cb(rowno, colno, posno, msgptr, usrmem)::Cint
     return Cint(0)
 end
 
-# define the status callback
+
+"""
+    function _Status_cb(modsta, solsta, iter, objval, usrmem)
+
+    callback method to extracting the final status of CONOPT. The status is stored in the ConoptModel
+    structure.
+"""
 function _Status_cb(modsta, solsta, iter, objval, usrmem)::Cint
    model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
@@ -387,7 +431,12 @@ function _Status_cb(modsta, solsta, iter, objval, usrmem)::Cint
    return Cint(0)
 end
 
-# define the solution callback
+
+"""
+    function _Solution_cb(xval, xmar, xbas, xsta, yval, ymar, ybas, ysta, numvar, numcon, usrmem)
+
+    callback for storing the final solution.
+"""
 function _Solution_cb(xval, xmar, xbas, xsta, yval, ymar, ybas, ysta, numvar, numcon, usrmem)::Cint
    model = unsafe_pointer_to_objref(usrmem)::ConoptModel
    solution = model.solution_status
@@ -423,7 +472,15 @@ function _Solution_cb(xval, xmar, xbas, xsta, yval, ymar, ybas, ysta, numvar, nu
 end
 
 
-# define the read matrix callback
+"""
+    function _ReadMatrix_cb(lower, curr, upper, vsta, constrtype, rhs, esta, colsta, rowno, value, nlflag,
+        numvar, numcon, numnz, usrmem)
+
+    callback for defining the matrix in CONOPT. This method copies across all data stored in
+    the ModelData structure into arrays provided by CONOPT. The ModelData structure includes a
+    "keep" parameter to indicate whether the data stored in ModelData is kept or destroyed after
+    defining the matrix.
+"""
 function _ReadMatrix_cb(lower, curr, upper, vsta, constrtype, rhs, esta, colsta, rowno, value, nlflag,
         numvar, numcon, numnz, usrmem)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
@@ -472,17 +529,19 @@ function _ReadMatrix_cb(lower, curr, upper, vsta, constrtype, rhs, esta, colsta,
     return Cint(0)
 end
 
-function _FDEvalIni_cb(
-    x_ptr::Ptr{Cdouble},
-    rowlist_ptr::Ptr{Cint},
-    mode::Cint,
-    listsize::Cint,
-    numthread_ptr::Ptr{Cint},
-    ignerr_ptr::Ptr{Cint},
-    errcnt_ptr::Ptr{Cint},
-    n::Cint,
-    usrmem::Ptr{Cvoid},
-)::Cint
+
+"""
+    function _FDEvalIni_cb(x_ptr, rowlist_ptr, mode, listsize, numthread_ptr, ignerr_ptr, errcnt_ptr, n,
+        usrmem)
+
+    Initialisation callback for the function and derivative evaluation. This method is called
+    immediately before the FDEval callback. This method can be used for setup data to speed up the
+    evaluation performed in FDEval. In the context of MOI, this method is used to execute the
+    function and jacobian evaluation, which is cached. Then the FDEval method simply returns the
+    cached values.
+"""
+function _FDEvalIni_cb(x_ptr, rowlist_ptr, mode, listsize, numthread_ptr, ignerr_ptr, errcnt_ptr, n,
+        usrmem)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
     x = unsafe_wrap(Array, x_ptr, n)
@@ -495,7 +554,12 @@ function _FDEvalIni_cb(
     return 0
 end
 
-# define the function and derivative evaluation callback
+
+"""
+    function _FDEval_cb(x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numjac, thread, usrmem)
+
+    callback for returning the function and derivative evaluation results
+"""
 function _FDEval_cb(x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numjac, thread, usrmem)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
@@ -514,6 +578,11 @@ function _FDEval_cb(x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numj
 end
 
 
+"""
+    function _SDLagrStr_cb(rowno, colno, nodrv, numvar, numcons, numhess, usrmem)
+
+    callback for returning the structure of the Lagrangian of the Hessian.
+"""
 function _SDLagrStr_cb(rowno, colno, nodrv, numvar, numcons, numhess, usrmem)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
@@ -534,6 +603,11 @@ function _SDLagrStr_cb(rowno, colno, nodrv, numvar, numcons, numhess, usrmem)::C
 end
 
 
+"""
+    function _SDLagrVal_cb(x, u, rowno, colno, value, nodrv, numvar, numcons, numhess, usrmem)
+
+    callback for returning the evaluation of the Lagrangian of the Hessian.
+"""
 function _SDLagrVal_cb(x, u, rowno, colno, value, nodrv, numvar, numcons, numhess, usrmem)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
@@ -550,7 +624,14 @@ function _SDLagrVal_cb(x, u, rowno, colno, value, nodrv, numvar, numcons, numhes
     return 0
 end
 
-function _Option_cb(ncall::Cint, rval::Ptr{Cdouble}, ival::Ptr{Cint}, lval::Ptr{Cint}, name_ptr::Ptr{Cchar}, usrmem::Ptr{Cvoid})::Cint
+
+"""
+    function _Option_cb(ncall, rval, ival, lval, name_ptr, usrmem)
+
+    callback for setting options in CONOPT. The options are stored in ConoptModel.options, and read
+    in this method.
+"""
+function _Option_cb(ncall, rval, ival, lval, name_ptr, usrmem)::Cint
     # Safely recover the model
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
@@ -616,35 +697,15 @@ function _Option_cb(ncall::Cint, rval::Ptr{Cdouble}, ival::Ptr{Cint}, lval::Ptr{
 end
 
 
+"""
+    function register_callbacks!(model::ConoptModel)
+
+    registers the callback methods for CONOPT.
+"""
 function register_callbacks!(model::ConoptModel)
     coierror = 0
 
     ptr = model.cntvect[]
-
-    # pass the callback to CONOPT
-    FDEvalIni_c = @cfunction(_FDEvalIni_cb, Cint, (
-        Ptr{Cdouble},
-        Ptr{Cint},
-        Cint,
-        Cint,
-        Ptr{Cint},
-        Ptr{Cint},
-        Ptr{Cint},
-        Cint,
-        Ptr{Cvoid},
-    ))
-    coierror += LibConopt.COIDEF_FDEvalIni(ptr, FDEvalIni_c)
-
-    FDEval_c = @cfunction(_FDEval_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cint,
-                                          Ptr{Cint}, Cint, Cint, Ptr{Cint},
-                                          Cint, Cint, Cint, Ptr{Cvoid}))
-    coierror += LibConopt.COIDEF_FDEval(ptr, FDEval_c)
-
-    ReadMatrix_c = @cfunction(_ReadMatrix_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint},
-                                                  Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
-                                                  Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Cint,
-                                                  Cint, Cint, Ptr{Cvoid}))
-    coierror += LibConopt.COIDEF_ReadMatrix(ptr, ReadMatrix_c)
 
     Message_c = @cfunction(_Message_cb, Cint, (Cint, Cint, Cint, Ptr{Cstring}, Ptr{Cvoid}))
     coierror += LibConopt.COIDEF_Message(ptr, Message_c)
@@ -660,13 +721,30 @@ function register_callbacks!(model::ConoptModel)
                                               Cint, Cint, Ptr{Cvoid}))
     coierror += LibConopt.COIDEF_Solution(ptr, Solution_c)
 
-    SDLagrStr_c = @cfunction(_SDLagrStr_cb, Cint, (Ptr{Cint}, Ptr{Cint}, Ptr{Cint},
-                                                    Cint, Cint, Cint, Ptr{Cvoid}))
-    coierror += LibConopt.COIDEF_2DLagrStr(ptr, SDLagrStr_c)
+    ReadMatrix_c = @cfunction(_ReadMatrix_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint},
+                                                  Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
+                                                  Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Cint,
+                                                  Cint, Cint, Ptr{Cvoid}))
+    coierror += LibConopt.COIDEF_ReadMatrix(ptr, ReadMatrix_c)
 
-    SDLagrVal_c = @cfunction(_SDLagrVal_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
-                                                   Ptr{Cdouble}, Ptr{Cint}, Cint, Cint, Cint, Ptr{Cvoid}))
-    coierror += LibConopt.COIDEF_2DLagrVal(ptr, SDLagrVal_c)
+    FDEvalIni_c = @cfunction(_FDEvalIni_cb, Cint, (Ptr{Cdouble}, Ptr{Cint}, Cint, Cint, Ptr{Cint},
+                                                Ptr{Cint}, Ptr{Cint}, Cint, Ptr{Cvoid}))
+    coierror += LibConopt.COIDEF_FDEvalIni(ptr, FDEvalIni_c)
+
+    FDEval_c = @cfunction(_FDEval_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cint,
+                                          Ptr{Cint}, Cint, Cint, Ptr{Cint},
+                                          Cint, Cint, Cint, Ptr{Cvoid}))
+    coierror += LibConopt.COIDEF_FDEval(ptr, FDEval_c)
+
+    if length(model.hess_structure.cols) > 0
+        SDLagrStr_c = @cfunction(_SDLagrStr_cb, Cint, (Ptr{Cint}, Ptr{Cint}, Ptr{Cint},
+                                                        Cint, Cint, Cint, Ptr{Cvoid}))
+        coierror += LibConopt.COIDEF_2DLagrStr(ptr, SDLagrStr_c)
+
+        SDLagrVal_c = @cfunction(_SDLagrVal_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
+                                                       Ptr{Cdouble}, Ptr{Cint}, Cint, Cint, Cint, Ptr{Cvoid}))
+        coierror += LibConopt.COIDEF_2DLagrVal(ptr, SDLagrVal_c)
+    end
 
     Option_c = @cfunction(_Option_cb, Cint, (Cint, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
                                              Ptr{Cchar}, Ptr{Cvoid}))
