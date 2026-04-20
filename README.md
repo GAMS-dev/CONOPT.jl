@@ -11,64 +11,36 @@ It has two components:
 
 ## Affiliation
 
-This wrapper is maintained by the JuMP community.
+This wrapper is maintained by the JuMP community with help from GAMS.
 
 ## License
 
 `Conopt.jl` is licensed under the [MIT License](https://github.com/jump-dev/Conopt.jl/blob/master/LICENSE).
 
-The underlying solver, CONOPT, is a closed-source commercial product for which you must purchase a license.
+The underlying solver, CONOPT, is proprietary software from GAMS. You must purchase a license to use it.
 
 ## Getting help
 
-If you need help, please ask a question on the [JuMP community forum](https://jump.dev/forum).
+Contact [GAMS support](mailto:support@gams.com) if you encounter any problems using this interface or the solver.
 
 If you have a reproducible example of a bug, please [open a GitHub issue](https://github.com/jump-dev/Conopt.jl/issues/new).
 
 ## Installation
 
-Install `Conopt.jl` using the Julia package manager:
+To use `Conopt.jl`, you must have a valid license and a local installation of the CONOPT solver libraries. Please see the [GAMS website](https://www.gams.com/download/) for information on obtaining CONOPT.
+
+`Conopt.jl` finds the CONOPT library by checking the `CONOPTDIR` environment variable, which should be set to the directory containing the CONOPT library.
+
+For example, on Linux, if your CONOPT library is at `/path/to/conopt/libconopt.so`, you should set `CONOPTDIR` as follows:
+```bash
+export CONOPTDIR="/path/to/conopt"
+```
+After setting the environment variable, you can install `Conopt.jl` using the Julia package manager:
 ```julia
 import Pkg
 Pkg.add("Conopt")
 ```
-
-In addition to installing the `Conopt.jl` package, this will also download and
-install the CONOPT binaries from [Conopt_jll.jl](https://github.com/jump-dev/Conopt_jll.jl).
-**You do not need to install the CONOPT binaries separately, but you do need a license to use them.**
-
-### Manual installation
-
-This section explains how to opt-out of using the `Conopt_jll` binaries.
-
-First, obtain a license and install a copy of CONOPT from [GAMS](https://www.gams.com/download/).
-
-Once installed, set the `CONOPTDIR` environment variable to point to the
-directory of your CONOPT installation, so that the file
-`${CONOPTDIR}/lib/libconopt` exists.
-
-Then, set the `CONOPT_JL_USE_CONOPT_JLL` environment variable to `"false"` and
-run `Pkg.add("Conopt")`. For example:
-
-```julia
-ENV["CONOPTDIR"] = "/path/to/conopt"
-ENV["CONOPT_JL_USE_CONOPT_JLL"] = "false"
-import Pkg
-Pkg.add("Conopt")
-using Conopt
-# check that the installation was successful
-```
-
-To change the location of a manual install, change the value of `CONOPTDIR`,
-call `Pkg.build("Conopt")`, and then restart Julia.
-
-To revert to the `Conopt_jll` binaries, do:
-```julia
-ENV["CONOPT_JL_USE_CONOPT_JLL"] = "true"
-import Pkg
-Pkg.build("Conopt")
-```
-then restart Julia.
+You may need to restart your Julia session for the environment variable change to take effect.
 
 ## Use with JuMP
 
