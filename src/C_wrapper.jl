@@ -324,17 +324,17 @@ function set_license!(model::ConoptModel)
     end
 
     int2 = something(
-                    model.license.license_int_1,
+                    model.license.license_int_2,
                     @load_preference("license_int_2"),
                     parse(Int, get(ENV, "CONOPT_LICENSE_INT_2", "0"))
                    )
     int3 = something(
-                    get(model.options, "license_int_3", nothing),
+                    model.license.license_int_3,
                     @load_preference("license_int_3"),
                     parse(Int, get(ENV, "CONOPT_LICENSE_INT_3", "0"))
                    )
     lstr = something(
-                    get(model.options, "license_string", nothing),
+                    model.license.license_string,
                     @load_preference("license_string"),
                     get(ENV, "CONOPT_LICENSE_STRING", "")
                    )

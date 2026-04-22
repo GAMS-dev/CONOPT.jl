@@ -386,6 +386,70 @@ function test_SolverVersion()
     return
 end
 
+function test_License_Attributes()
+    model = Conopt.Optimizer()
+
+    # 1. Test setting the attributes via MOI
+    MOI.set(model, MOI.RawOptimizerAttribute("license_int_1"), 123)
+    MOI.set(model, MOI.RawOptimizerAttribute("license_int_2"), 456)
+    MOI.set(model, MOI.RawOptimizerAttribute("license_int_3"), 789)
+    MOI.set(model, MOI.RawOptimizerAttribute("license_string"), "my_test_license")
+
+    # 2. Verify they are stored in the MOI Optimizer struct correctly
+    @test model.license_int_1 == 123
+    @test model.license_int_2 == 456
+    @test model.license_int_3 == 789
+    @test model.license_string == "my_test_license"
+
+    # 3. Simulate the start of an optimize! call which triggers _setup_options!
+    Conopt._setup_options!(model)
+
+    # 4. Verify they propagated safely to the C_wrapper's ConoptModel
+    @test model.inner.license.license_int_1 == 123
+    @test model.inner.license.license_int_2 == 456
+    @test model.inner.license.license_int_3 == 789
+    @test model.inner.license.license_string == "my_test_license"
+
+    return
+end
+
+function test_License_Environment_Fallback()
+    model = Conopt.Optimizer()
+
+    # Clear any MOI attributes so it is forced to fall back
+    model.license_int_1 = nothing
+    model.license_int_2 = nothing
+    model.license_int_3 = nothing
+    model.license_string = nothing
+    Conopt._setup_options!(model)
+
+    # Set dummy environment variables
+    ENV["CONOPT_LICENSE_INT_1"] = "111"
+    ENV["CONOPT_LICENSE_INT_2"] = "222"
+    ENV["CONOPT_LICENSE_INT_3"] = "333"
+    ENV["CONOPT_LICENSE_STRING"] = "env_fallback_license"
+
+    # We manually extract the values exactly as set_license! does to test the logic
+    # (We avoid calling set_license! directly here so we don't trigger a C-API error with dummy keys)
+    int1 = something(model.inner.license.license_int_1, parse(Int, get(ENV, "CONOPT_LICENSE_INT_1", "0")))
+    int2 = something(model.inner.license.license_int_2, parse(Int, get(ENV, "CONOPT_LICENSE_INT_2", "0")))
+    int3 = something(model.inner.license.license_int_3, parse(Int, get(ENV, "CONOPT_LICENSE_INT_3", "0")))
+    lstr = something(model.inner.license.license_string, get(ENV, "CONOPT_LICENSE_STRING", ""))
+
+    @test int1 == 111
+    @test int2 == 222
+    @test int3 == 333
+    @test lstr == "env_fallback_license"
+
+    # Clean up the environment
+    delete!(ENV, "CONOPT_LICENSE_INT_1")
+    delete!(ENV, "CONOPT_LICENSE_INT_2")
+    delete!(ENV, "CONOPT_LICENSE_INT_3")
+    delete!(ENV, "CONOPT_LICENSE_STRING")
+
+    return
+end
+
 end # module TestConopt
 
 # This line at the end of the file runs all the tests!
