@@ -15,16 +15,9 @@ model = Model(Conopt.Optimizer)
 @variable(model, x >= 0)
 @variable(model, y >= 0)
 
-@objective(
-    model,
-    Min,
-    (x - 1)^2 + (y - 2)^2
-)
+@objective(model, Min, (x - 1)^2 + (y - 2)^2)
 
-@constraint(
-    model,
-    x * y >= 4
-)
+@constraint(model, x * y >= 4)
 
 println("Model setup:")
 print(model)
@@ -38,7 +31,8 @@ Results:")
 println("Termination status: ", termination_status(model))
 println("Primal status: ", primal_status(model))
 
-if termination_status(model) == MOI.OPTIMAL || termination_status(model) == MOI.LOCALLY_SOLVED
+if termination_status(model) == MOI.OPTIMAL ||
+    termination_status(model) == MOI.LOCALLY_SOLVED
     println("
 Optimal solution found")
     println("x = ", value(x))

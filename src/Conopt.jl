@@ -46,9 +46,9 @@ function __init__()
         and then restart Julia.
         """
         # Return early so we don't attempt to load or verify the missing library
-        return
+        return nothing
     end
-    return
+    return nothing
 end
 
 include("libconopt.jl")
@@ -56,7 +56,7 @@ include("C_wrapper.jl")
 
 export LibConopt
 
-for sym in filter(s -> startswith("$s", "Conopt_"), names(@__MODULE__, all = true))
+for sym in filter(s -> startswith("$s", "Conopt_"), names(@__MODULE__; all=true))
     @eval export $sym
 end
 

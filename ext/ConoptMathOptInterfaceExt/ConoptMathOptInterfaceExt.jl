@@ -13,7 +13,7 @@ function __init__()
     setglobal!(Conopt, :Optimizer, Optimizer)
     #setglobal!(Conopt, :CallbackFunction, CallbackFunction)
     #setglobal!(Conopt, :_VectorNonlinearOracle, MOI.VectorNonlinearOracle)
-    return
+    return nothing
 end
 
 include("MOI_wrapper.jl")

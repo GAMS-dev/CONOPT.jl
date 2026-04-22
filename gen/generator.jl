@@ -12,7 +12,10 @@ options = load_options(joinpath(@__DIR__, "generator.toml"))
 
 args = String[]
 
-headers = [joinpath(include_dir, header) for header in readdir(include_dir) if endswith(header, ".h")]
+headers = [
+    joinpath(include_dir, header) for
+    header in readdir(include_dir) if endswith(header, ".h")
+]
 
 ctx = create_context(headers, args, options)
 

@@ -72,8 +72,8 @@ mutable struct ModelData
             Cint[],
             -1,                         # the objective row index
             ObjSense_Feasibility,       # the objective sense
-            false
-            )
+            false,
+        )
     end
 end
 
@@ -86,13 +86,7 @@ mutable struct JacobianStructure
     keep::Bool              # should the data be kept after being read by Conopt
 
     function JacobianStructure()
-        return new(
-            Cint[],
-            Cint[],
-            Float64[],
-            Cint[],
-            false
-            )
+        return new(Cint[], Cint[], Float64[], Cint[], false)
     end
 end
 
@@ -103,11 +97,7 @@ mutable struct HessianStructure
     keep::Bool          # should the data be kept after being read by Conopt
 
     function HessianStructure()
-        return new(
-            Cint[],
-            Cint[],
-            false
-            )
+        return new(Cint[], Cint[], false)
     end
 end
 
@@ -118,7 +108,7 @@ mutable struct SolutionStatus
     x_status::Vector{Int}           # the status of the variables
 
     y_value::Vector{Float64}        # the final value of the left hand side of all constraints,
-                                    # including linear and nonlinear terms
+    # including linear and nonlinear terms
     y_marginal::Vector{Float64}     # the marginal or reduced costs for the constraints
     y_basis::Vector{Int}            # the basis indicators for the constraints
     y_status::Vector{Int}           # the status of the constraints
@@ -147,8 +137,8 @@ mutable struct SolutionStatus
             0,
             NaN,
             false,
-            false
-            )
+            false,
+        )
     end
 end
 
@@ -158,13 +148,13 @@ mutable struct ConoptCallbacks
     eval_jac::Function
 
     # optional callbacks
-    eval_hess::Union{Function,Nothing}
-    eval_f_ini::Union{Function,Nothing}
-    eval_f_end::Union{Function,Nothing}
-    message::Union{Function,Nothing}
-    errmsg::Union{Function,Nothing}
-    solution::Union{Function,Nothing}
-    status::Union{Function,Nothing}
+    eval_hess::Union{Function, Nothing}
+    eval_f_ini::Union{Function, Nothing}
+    eval_f_end::Union{Function, Nothing}
+    message::Union{Function, Nothing}
+    errmsg::Union{Function, Nothing}
+    solution::Union{Function, Nothing}
+    status::Union{Function, Nothing}
 
     function ConoptCallbacks()
         return new(
@@ -185,26 +175,16 @@ mutable struct ConoptCallbacks
 end
 
 mutable struct ConoptLicense
-    license_int_1::Union{Int,Nothing}
-    license_int_2::Union{Int,Nothing}
-    license_int_3::Union{Int,Nothing}
-    license_string::Union{String,Nothing}
+    license_int_1::Union{Int, Nothing}
+    license_int_2::Union{Int, Nothing}
+    license_int_3::Union{Int, Nothing}
+    license_string::Union{String, Nothing}
 
     function ConoptLicense(licint1::Int, licint2::Int, licint3::Int, licstr::String)
-        return new(
-                   licint1,
-                   licint2,
-                   licint3,
-                   licstr
-                  )
+        return new(licint1, licint2, licint3, licstr)
     end
     function ConoptLicense()
-        return new(
-                   nothing,
-                   nothing,
-                   nothing,
-                   nothing
-                  )
+        return new(nothing, nothing, nothing, nothing)
     end
 end
 
@@ -214,7 +194,7 @@ mutable struct ConoptModel
     log_level::Int              # the log level for the Conopt output. This matches the C++ verbosity levels
     time_limit::Float64         # the solver time limit
     threads::Int                # the number of threads to use
-    options::Dict{String,Any}    # solver options
+    options::Dict{String, Any}    # solver options
     option_offset::Int           # offset for invalid options
 
     license::ConoptLicense      # storing the details of the Conopt license
@@ -244,7 +224,7 @@ mutable struct ConoptModel
             2,
             1e+06,
             0,
-            Dict{String,Any}(),  # options
+            Dict{String, Any}(),  # options
             0,
             ConoptLicense(),
             ModelData(),
@@ -252,7 +232,7 @@ mutable struct ConoptModel
             HessianStructure(),
             ConoptCallbacks(),
             SolutionStatus(),
-            nothing
+            nothing,
         )
 
         finalizer(_free_control_vector!, model)
@@ -281,8 +261,7 @@ end
     checks if the model is empty.
 """
 function is_empty(model::ConoptModel)
-    return model.model_data.num_variables == 0 &&
-        model.model_data.num_constraints == 0
+    return model.model_data.num_variables == 0 && model.model_data.num_constraints == 0
 end
 
 
@@ -313,10 +292,10 @@ function set_license!(model::ConoptModel)
     ptr = model.cntvect[]
 
     int1 = something(
-                    model.license.license_int_1,
-                    @load_preference("license_int_1"),
-                    parse(Int, get(ENV, "CONOPT_LICENSE_INT_1", "0"))
-                   )
+        model.license.license_int_1,
+        @load_preference("license_int_1"),
+        parse(Int, get(ENV, "CONOPT_LICENSE_INT_1", "0")),
+    )
 
     # if the license int1 is not set, then we can exit immediately
     if int1 == 0
@@ -324,23 +303,25 @@ function set_license!(model::ConoptModel)
     end
 
     int2 = something(
-                    model.license.license_int_2,
-                    @load_preference("license_int_2"),
-                    parse(Int, get(ENV, "CONOPT_LICENSE_INT_2", "0"))
-                   )
+        model.license.license_int_2,
+        @load_preference("license_int_2"),
+        parse(Int, get(ENV, "CONOPT_LICENSE_INT_2", "0")),
+    )
     int3 = something(
-                    model.license.license_int_3,
-                    @load_preference("license_int_3"),
-                    parse(Int, get(ENV, "CONOPT_LICENSE_INT_3", "0"))
-                   )
+        model.license.license_int_3,
+        @load_preference("license_int_3"),
+        parse(Int, get(ENV, "CONOPT_LICENSE_INT_3", "0")),
+    )
     lstr = something(
-                    model.license.license_string,
-                    @load_preference("license_string"),
-                    get(ENV, "CONOPT_LICENSE_STRING", "")
-                   )
+        model.license.license_string,
+        @load_preference("license_string"),
+        get(ENV, "CONOPT_LICENSE_STRING", ""),
+    )
 
     GC.@preserve lstr begin
-        coierror = LibConopt.COIDEF_License(ptr, Cint(int1), Cint(int2), Cint(int3), pointer(lstr))
+        coierror = LibConopt.COIDEF_License(
+            ptr, Cint(int1), Cint(int2), Cint(int3), pointer(lstr)
+        )
     end
 
     return coierror
@@ -378,7 +359,8 @@ function initialize!(model::ConoptModel)
     end
 
     # objective information
-    if model.model_data.sense == ObjSense_Maximize || model.model_data.sense == ObjSense_Minimize
+    if model.model_data.sense == ObjSense_Maximize ||
+        model.model_data.sense == ObjSense_Minimize
         coierror += LibConopt.COIDEF_OptDir(ptr, Int(model.model_data.sense))
 
         # in model.nlp_model, we store objective as the last constraint, hence use ObjCon (not ObjVar) here
@@ -439,8 +421,8 @@ function _Message_cb(smsg, dmsg, nmsg, msgv, usrmem)::Cint
             message_length = max(message_length, nmsg)
         end
 
-        msg = unsafe_wrap(Vector{Cstring}, msgv, message_length; own = false)
-        for i = 1:message_length
+        msg = unsafe_wrap(Vector{Cstring}, msgv, message_length; own=false)
+        for i in 1:message_length
             println(unsafe_string(pointer(msg[i])))
         end
     end
@@ -466,7 +448,8 @@ function _ErrMsg_cb(rowno, colno, posno, msgptr, usrmem)::Cint
         elseif colno == -1
             error_message *= "Constraint " * string(rowno)
         else
-            error_message *= "Variable " * string(colno) * " appearing in Constraint " * string(rowno)
+            error_message *=
+                "Variable " * string(colno) * " appearing in Constraint " * string(rowno)
         end
         if msgptr != C_NULL
             actual_message = unsafe_string(msgptr)
@@ -487,19 +470,19 @@ end
     structure.
 """
 function _Status_cb(modsta, solsta, iter, objval, usrmem)::Cint
-   model = unsafe_pointer_to_objref(usrmem)::ConoptModel
+    model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
-   model.solution_status.model_status = ModelStatus(modsta)
-   model.solution_status.solve_status = SolveStatus(solsta)
+    model.solution_status.model_status = ModelStatus(modsta)
+    model.solution_status.solve_status = SolveStatus(solsta)
 
-   model.solution_status.iterations = iter
-   model.solution_status.objective = objval
+    model.solution_status.iterations = iter
+    model.solution_status.objective = objval
 
-   model.solution_status.raw_status = "CONOPT stopped"
+    model.solution_status.raw_status = "CONOPT stopped"
 
-   model.solution_status.status_stored = true;
+    model.solution_status.status_stored = true;
 
-   return Cint(0)
+    return Cint(0)
 end
 
 
@@ -508,38 +491,40 @@ end
 
     callback for storing the final solution.
 """
-function _Solution_cb(xval, xmar, xbas, xsta, yval, ymar, ybas, ysta, numvar, numcon, usrmem)::Cint
-   model = unsafe_pointer_to_objref(usrmem)::ConoptModel
-   solution = model.solution_status
+function _Solution_cb(
+    xval, xmar, xbas, xsta, yval, ymar, ybas, ysta, numvar, numcon, usrmem
+)::Cint
+    model = unsafe_pointer_to_objref(usrmem)::ConoptModel
+    solution = model.solution_status
 
-   # copying the data across to the solution structure
-   xval_view = unsafe_wrap(Array, xval, numvar; own=false)
-   solution.x_value = copy(xval_view)
+    # copying the data across to the solution structure
+    xval_view = unsafe_wrap(Array, xval, numvar; own=false)
+    solution.x_value = copy(xval_view)
 
-   xmar_view = unsafe_wrap(Array, xmar, numvar; own=false)
-   solution.x_marginal = copy(xmar_view)
+    xmar_view = unsafe_wrap(Array, xmar, numvar; own=false)
+    solution.x_marginal = copy(xmar_view)
 
-   xbas_view = unsafe_wrap(Array, xbas, numvar; own=false)
-   solution.x_basis = copy(xbas_view)
+    xbas_view = unsafe_wrap(Array, xbas, numvar; own=false)
+    solution.x_basis = copy(xbas_view)
 
-   xsta_view = unsafe_wrap(Array, xsta, numvar; own=false)
-   solution.x_status = copy(xsta_view)
+    xsta_view = unsafe_wrap(Array, xsta, numvar; own=false)
+    solution.x_status = copy(xsta_view)
 
-   yval_view = unsafe_wrap(Array, yval, numcon; own=false)
-   solution.y_value = copy(yval_view)
+    yval_view = unsafe_wrap(Array, yval, numcon; own=false)
+    solution.y_value = copy(yval_view)
 
-   ymar_view = unsafe_wrap(Array, ymar, numcon; own=false)
-   solution.y_marginal = copy(ymar_view)
+    ymar_view = unsafe_wrap(Array, ymar, numcon; own=false)
+    solution.y_marginal = copy(ymar_view)
 
-   ybas_view = unsafe_wrap(Array, ybas, numcon; own=false)
-   solution.y_basis = copy(ybas_view)
+    ybas_view = unsafe_wrap(Array, ybas, numcon; own=false)
+    solution.y_basis = copy(ybas_view)
 
-   ysta_view = unsafe_wrap(Array, ysta, numcon; own=false)
-   solution.y_status = copy(ysta_view)
+    ysta_view = unsafe_wrap(Array, ysta, numcon; own=false)
+    solution.y_status = copy(ysta_view)
 
-   model.solution_status.solution_stored = true
+    model.solution_status.solution_stored = true
 
-   return Cint(0)
+    return Cint(0)
 end
 
 
@@ -552,8 +537,23 @@ end
     "keep" parameter to indicate whether the data stored in ModelData is kept or destroyed after
     defining the matrix.
 """
-function _ReadMatrix_cb(lower, curr, upper, vsta, constrtype, rhs, esta, colsta, rowno, value, nlflag,
-        numvar, numcon, numnz, usrmem)::Cint
+function _ReadMatrix_cb(
+    lower,
+    curr,
+    upper,
+    vsta,
+    constrtype,
+    rhs,
+    esta,
+    colsta,
+    rowno,
+    value,
+    nlflag,
+    numvar,
+    numcon,
+    numnz,
+    usrmem,
+)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
     @assert numvar == model.model_data.num_variables
@@ -611,8 +611,9 @@ end
     function and jacobian evaluation, which is cached. Then the FDEval method simply returns the
     cached values.
 """
-function _FDEvalIni_cb(x_ptr, rowlist_ptr, mode, listsize, numthread_ptr, ignerr_ptr, errcnt_ptr, n,
-        usrmem)::Cint
+function _FDEvalIni_cb(
+    x_ptr, rowlist_ptr, mode, listsize, numthread_ptr, ignerr_ptr, errcnt_ptr, n, usrmem
+)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
     x = unsafe_wrap(Array, x_ptr, n)
@@ -631,7 +632,9 @@ end
 
     callback for returning the function and derivative evaluation results
 """
-function _FDEval_cb(x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numjac, thread, usrmem)::Cint
+function _FDEval_cb(
+    x, g, jac, rowno, jacnum, mode, ignerr, errcnt, numvar, numjac, thread, usrmem
+)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
     if mode == 1 || mode == 3
@@ -679,7 +682,9 @@ end
 
     callback for returning the evaluation of the Lagrangian of the Hessian.
 """
-function _SDLagrVal_cb(x, u, rowno, colno, value, nodrv, numvar, numcons, numhess, usrmem)::Cint
+function _SDLagrVal_cb(
+    x, u, rowno, colno, value, nodrv, numvar, numcons, numhess, usrmem
+)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
     x_val = unsafe_wrap(Array{Float64}, x, numvar; own=false)
@@ -787,38 +792,115 @@ function register_callbacks!(model::ConoptModel)
     Status_c = @cfunction(_Status_cb, Cint, (Cint, Cint, Cint, Cdouble, Ptr{Cvoid}))
     coierror += LibConopt.COIDEF_Status(ptr, Status_c)
 
-    Solution_c = @cfunction(_Solution_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
-                                              Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
-                                              Cint, Cint, Ptr{Cvoid}))
+    Solution_c = @cfunction(
+        _Solution_cb,
+        Cint,
+        (
+            Ptr{Cdouble},
+            Ptr{Cdouble},
+            Ptr{Cint},
+            Ptr{Cint},
+            Ptr{Cdouble},
+            Ptr{Cdouble},
+            Ptr{Cint},
+            Ptr{Cint},
+            Cint,
+            Cint,
+            Ptr{Cvoid},
+        )
+    )
     coierror += LibConopt.COIDEF_Solution(ptr, Solution_c)
 
-    ReadMatrix_c = @cfunction(_ReadMatrix_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint},
-                                                  Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
-                                                  Ptr{Cint}, Ptr{Cdouble}, Ptr{Cint}, Cint,
-                                                  Cint, Cint, Ptr{Cvoid}))
+    ReadMatrix_c = @cfunction(
+        _ReadMatrix_cb,
+        Cint,
+        (
+            Ptr{Cdouble},
+            Ptr{Cdouble},
+            Ptr{Cdouble},
+            Ptr{Cint},
+            Ptr{Cint},
+            Ptr{Cdouble},
+            Ptr{Cint},
+            Ptr{Cint},
+            Ptr{Cint},
+            Ptr{Cdouble},
+            Ptr{Cint},
+            Cint,
+            Cint,
+            Cint,
+            Ptr{Cvoid},
+        )
+    )
     coierror += LibConopt.COIDEF_ReadMatrix(ptr, ReadMatrix_c)
 
-    FDEvalIni_c = @cfunction(_FDEvalIni_cb, Cint, (Ptr{Cdouble}, Ptr{Cint}, Cint, Cint, Ptr{Cint},
-                                                Ptr{Cint}, Ptr{Cint}, Cint, Ptr{Cvoid}))
+    FDEvalIni_c = @cfunction(
+        _FDEvalIni_cb,
+        Cint,
+        (
+            Ptr{Cdouble},
+            Ptr{Cint},
+            Cint,
+            Cint,
+            Ptr{Cint},
+            Ptr{Cint},
+            Ptr{Cint},
+            Cint,
+            Ptr{Cvoid},
+        )
+    )
     coierror += LibConopt.COIDEF_FDEvalIni(ptr, FDEvalIni_c)
 
-    FDEval_c = @cfunction(_FDEval_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cint,
-                                          Ptr{Cint}, Cint, Cint, Ptr{Cint},
-                                          Cint, Cint, Cint, Ptr{Cvoid}))
+    FDEval_c = @cfunction(
+        _FDEval_cb,
+        Cint,
+        (
+            Ptr{Cdouble},
+            Ptr{Cdouble},
+            Ptr{Cdouble},
+            Cint,
+            Ptr{Cint},
+            Cint,
+            Cint,
+            Ptr{Cint},
+            Cint,
+            Cint,
+            Cint,
+            Ptr{Cvoid},
+        )
+    )
     coierror += LibConopt.COIDEF_FDEval(ptr, FDEval_c)
 
     if length(model.hess_structure.cols) > 0
-        SDLagrStr_c = @cfunction(_SDLagrStr_cb, Cint, (Ptr{Cint}, Ptr{Cint}, Ptr{Cint},
-                                                        Cint, Cint, Cint, Ptr{Cvoid}))
+        SDLagrStr_c = @cfunction(
+            _SDLagrStr_cb,
+            Cint,
+            (Ptr{Cint}, Ptr{Cint}, Ptr{Cint}, Cint, Cint, Cint, Ptr{Cvoid})
+        )
         coierror += LibConopt.COIDEF_2DLagrStr(ptr, SDLagrStr_c)
 
-        SDLagrVal_c = @cfunction(_SDLagrVal_cb, Cint, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
-                                                       Ptr{Cdouble}, Ptr{Cint}, Cint, Cint, Cint, Ptr{Cvoid}))
+        SDLagrVal_c = @cfunction(
+            _SDLagrVal_cb,
+            Cint,
+            (
+                Ptr{Cdouble},
+                Ptr{Cdouble},
+                Ptr{Cint},
+                Ptr{Cint},
+                Ptr{Cdouble},
+                Ptr{Cint},
+                Cint,
+                Cint,
+                Cint,
+                Ptr{Cvoid},
+            )
+        )
         coierror += LibConopt.COIDEF_2DLagrVal(ptr, SDLagrVal_c)
     end
 
-    Option_c = @cfunction(_Option_cb, Cint, (Cint, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint},
-                                             Ptr{Cchar}, Ptr{Cvoid}))
+    Option_c = @cfunction(
+        _Option_cb, Cint, (Cint, Ptr{Cdouble}, Ptr{Cint}, Ptr{Cint}, Ptr{Cchar}, Ptr{Cvoid})
+    )
     coierror += LibConopt.COIDEF_Option(ptr, Option_c)
 
     return coierror

@@ -7,31 +7,31 @@ using Test
 import MathOptInterface as MOI
 
 const OPTIMIZER = MOI.instantiate(
-        MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true),
-        )
+    MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true)
+)
 
 const BRIDGED = MOI.instantiate(
-        MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true),
-        with_bridge_type = Float64,
-        )
+    MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true);
+    with_bridge_type=Float64,
+)
 
 # See the docstring of MOI.Test.Config for other arguments.
-const CONFIG = MOI.Test.Config(
-        # Modify tolerances as necessary.
-        atol = 1e-6,
-        rtol = 1e-6,
-        infeasible_status = MOI.LOCALLY_INFEASIBLE,
-        optimal_status = MOI.LOCALLY_SOLVED,
-        # Pass attributes or MOI functions to `exclude` to skip tests that
-        # rely on this functionality.
-        exclude = Any[
-            MOI.VariableName,
-            MOI.delete,
-            MOI.ConstraintDual,
-            MOI.ConstraintBasisStatus,
-            MOI.DualObjectiveValue
-            ],
-        )
+const CONFIG = MOI.Test.Config(;
+    # Modify tolerances as necessary.
+    atol=1e-6,
+    rtol=1e-6,
+    infeasible_status=MOI.LOCALLY_INFEASIBLE,
+    optimal_status=MOI.LOCALLY_SOLVED,
+    # Pass attributes or MOI functions to `exclude` to skip tests that
+    # rely on this functionality.
+    exclude=Any[
+        MOI.VariableName,
+        MOI.delete,
+        MOI.ConstraintDual,
+        MOI.ConstraintBasisStatus,
+        MOI.DualObjectiveValue,
+    ],
+)
 
 """
     runtests()
@@ -39,7 +39,7 @@ const CONFIG = MOI.Test.Config(
 This function runs all functions in the this Module starting with `test_`.
 """
 function runtests()
-    for name in names(@__MODULE__; all = true)
+    for name in names(@__MODULE__; all=true)
         if startswith("$(name)", "test_")
             @testset "$(name)" begin
                 getfield(@__MODULE__, name)()
@@ -59,28 +59,28 @@ implemented or that your solver doesn't support.
 function test_runtests()
     MOI.Test.runtests(
         BRIDGED,
-        CONFIG,
-        include = String[
-                 "test_linear_",
-                 "test_quadratic_",
-                 "test_nonlinear",
-                 "test_model_",
-                 "test_solver_",
-                 "test_variable_",
-                 "test_objective_",
-               ],
-        exclude = [
-                "test_nonlinear_hs071_global", # CONOPT is a local solver
-                ],
+        CONFIG;
+        include=String[
+            "test_linear_",
+            "test_quadratic_",
+            "test_nonlinear",
+            "test_model_",
+            "test_solver_",
+            "test_variable_",
+            "test_objective_",
+        ],
+        exclude=[
+            "test_nonlinear_hs071_global", # CONOPT is a local solver
+        ],
         # This argument is useful to prevent tests from failing on future
         # releases of MOI that add new tests. Don't let this number get too far
         # behind the current MOI release though. You should periodically check
         # for new tests to fix bugs and implement new features.
         #exclude_tests_after = v"0.10.5",
-        verbose = true
-        )
+        verbose=true,
+    )
 
-    return
+    return nothing
 end
 
 """
@@ -91,7 +91,7 @@ test as a function with a name beginning with `test_`.
 """
 function test_SolverName()
     @test MOI.get(Conopt.Optimizer(), MOI.SolverName()) == "CONOPT"
-    return
+    return nothing
 end
 
 function test_Name_and_Silent()
@@ -112,7 +112,7 @@ function test_Name_and_Silent()
     MOI.set(model, MOI.Silent(), false)
     @test MOI.get(model, MOI.Silent()) == false
     @test model.silent == false
-    return
+    return nothing
 end
 
 function test_TimeLimitSec()
@@ -129,7 +129,7 @@ function test_TimeLimitSec()
     # Test resetting to default
     MOI.set(model, MOI.TimeLimitSec(), nothing)
     @test MOI.get(model, MOI.TimeLimitSec()) == 1e+06
-    return
+    return nothing
 end
 
 function test_NumberOfThreads()
@@ -146,7 +146,7 @@ function test_NumberOfThreads()
     # Test resetting to default
     MOI.set(model, MOI.NumberOfThreads(), nothing)
     @test MOI.get(model, MOI.NumberOfThreads()) == 0
-    return
+    return nothing
 end
 
 function test_RawOptimizerAttribute()
@@ -175,7 +175,7 @@ function test_RawOptimizerAttribute()
     # (Testing that Julia's @error logging system catches your error message)
     @test_logs (:error, r"Invalid value for LogLevel") MOI.set(model, log_attr, 5)
     @test_logs (:error, r"Invalid value for LogLevel") MOI.set(model, log_attr, 0)
-    return
+    return nothing
 end
 
 function test_Unsupported_Limits()
@@ -187,7 +187,7 @@ function test_Unsupported_Limits()
     @test !MOI.supports(model, MOI.NodeLimit())
     @test !MOI.supports(model, MOI.AbsoluteGapTolerance())
     @test !MOI.supports(model, MOI.RelativeGapTolerance())
-    return
+    return nothing
 end
 
 function test_Status_Mappings()
@@ -221,7 +221,7 @@ function test_Status_Mappings()
     # Test: ITERATION_LIMIT
     model.inner.solution_status.solve_status = Conopt.SolveStatus_Iteration_Interrupt
     @test MOI.get(model, MOI.TerminationStatus()) == MOI.ITERATION_LIMIT
-    return
+    return nothing
 end
 
 function test_Objective_Sense_Mappings()
@@ -235,7 +235,7 @@ function test_Objective_Sense_Mappings()
 
     MOI.set(model, MOI.ObjectiveSense(), MOI.FEASIBILITY_SENSE)
     @test model.inner.model_data.sense == Conopt.ObjSense_Feasibility
-    return
+    return nothing
 end
 
 
@@ -265,13 +265,13 @@ function test_Option_Callback_Logic()
     ncall = 1
     while ncall < 5 # limit the loop so we don't accidentally get an infinite loop.
         rc = Conopt._Option_cb(
-                Int32(ncall),
-                Base.unsafe_convert(Ptr{Cdouble}, rval_ref),
-                Base.unsafe_convert(Ptr{Cint}, ival_ref),
-                Base.unsafe_convert(Ptr{Cint}, lval_ref),
-                pointer(name_buf),
-                pointer_from_objref(model.inner)
-               )
+            Int32(ncall),
+            Base.unsafe_convert(Ptr{Cdouble}, rval_ref),
+            Base.unsafe_convert(Ptr{Cint}, ival_ref),
+            Base.unsafe_convert(Ptr{Cint}, lval_ref),
+            pointer(name_buf),
+            pointer_from_objref(model.inner),
+        )
 
         @test rc == 0
         param_name = unsafe_string(pointer(name_buf))
@@ -291,7 +291,7 @@ function test_Option_Callback_Logic()
         ncall += 1
     end
 
-    return
+    return nothing
 end
 
 function test_Option_Persistence()
@@ -325,7 +325,7 @@ function test_VariablePrimalStart()
 
     # Check that it actually went to the internal C-struct
     @test model.inner.model_data.variable_primal_start[1] == 3.14
-    return
+    return nothing
 end
 
 function test_ResultCount_and_Bounds()
@@ -347,7 +347,7 @@ function test_ResultCount_and_Bounds()
     # Now ResultCount should be 1 and ObjectiveValue should work
     @test MOI.get(model, MOI.ResultCount()) == 1
     @test MOI.get(model, MOI.ObjectiveValue()) == 42.0
-    return
+    return nothing
 end
 
 function test_IsValid()
@@ -370,7 +370,7 @@ function test_IsValid()
 
     @test !MOI.is_valid(model, bad_vi)
     @test !MOI.is_valid(model, bad_ci)
-    return
+    return nothing
 end
 
 function test_SolverVersion()
@@ -383,7 +383,7 @@ function test_SolverVersion()
 
     # Verify it roughly looks like a version number (e.g., contains dots)
     @test occursin(".", version_str)
-    return
+    return nothing
 end
 
 function test_License_Attributes()
@@ -410,7 +410,7 @@ function test_License_Attributes()
     @test model.inner.license.license_int_3 == 789
     @test model.inner.license.license_string == "my_test_license"
 
-    return
+    return nothing
 end
 
 function test_License_Environment_Fallback()
@@ -431,10 +431,18 @@ function test_License_Environment_Fallback()
 
     # We manually extract the values exactly as set_license! does to test the logic
     # (We avoid calling set_license! directly here so we don't trigger a C-API error with dummy keys)
-    int1 = something(model.inner.license.license_int_1, parse(Int, get(ENV, "CONOPT_LICENSE_INT_1", "0")))
-    int2 = something(model.inner.license.license_int_2, parse(Int, get(ENV, "CONOPT_LICENSE_INT_2", "0")))
-    int3 = something(model.inner.license.license_int_3, parse(Int, get(ENV, "CONOPT_LICENSE_INT_3", "0")))
-    lstr = something(model.inner.license.license_string, get(ENV, "CONOPT_LICENSE_STRING", ""))
+    int1 = something(
+        model.inner.license.license_int_1, parse(Int, get(ENV, "CONOPT_LICENSE_INT_1", "0"))
+    )
+    int2 = something(
+        model.inner.license.license_int_2, parse(Int, get(ENV, "CONOPT_LICENSE_INT_2", "0"))
+    )
+    int3 = something(
+        model.inner.license.license_int_3, parse(Int, get(ENV, "CONOPT_LICENSE_INT_3", "0"))
+    )
+    lstr = something(
+        model.inner.license.license_string, get(ENV, "CONOPT_LICENSE_STRING", "")
+    )
 
     @test int1 == 111
     @test int2 == 222
@@ -447,7 +455,7 @@ function test_License_Environment_Fallback()
     delete!(ENV, "CONOPT_LICENSE_INT_3")
     delete!(ENV, "CONOPT_LICENSE_STRING")
 
-    return
+    return nothing
 end
 
 end # module TestConopt
