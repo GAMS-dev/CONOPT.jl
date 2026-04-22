@@ -5,6 +5,7 @@ repo = "TODO"
 
 [deps]
 CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
+JuliaFormatter = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
 Preferences = "21216c6a-2e73-6563-6e65-726566657250"
 
 [weakdeps]
@@ -15,6 +16,7 @@ ConoptMathOptInterfaceExt = "MathOptInterface"
 
 [compat]
 CEnum = "0.5.0"
+JuliaFormatter = "2.3.0"
 MathOptInterface = "1.49.0"
 Preferences = "1.5.2"
 Test = "1.11.0"
