@@ -1,4 +1,0 @@
-[general]
-library_name = "libconopt"
-output_file_path = "../src/gen/libconopt.jl"
-module_name = "LibConopt"
