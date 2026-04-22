@@ -401,8 +401,10 @@ function test_License_Attributes()
     @test model.license_int_3 == 789
     @test model.license_string == "my_test_license"
 
+    ext = Base.get_extension(Conopt, :ConoptMathOptInterfaceExt)
+
     # 3. Simulate the start of an optimize! call which triggers _setup_options!
-    Conopt._setup_options!(model)
+    ext._setup_options!(model)
 
     # 4. Verify they propagated safely to the C_wrapper's ConoptModel
     @test model.inner.license.license_int_1 == 123
@@ -421,7 +423,9 @@ function test_License_Environment_Fallback()
     model.license_int_2 = nothing
     model.license_int_3 = nothing
     model.license_string = nothing
-    Conopt._setup_options!(model)
+
+    ext = Base.get_extension(Conopt, :ConoptMathOptInterfaceExt)
+    ext._setup_options!(model)
 
     # Set dummy environment variables
     ENV["CONOPT_LICENSE_INT_1"] = "111"
