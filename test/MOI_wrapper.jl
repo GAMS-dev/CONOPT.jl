@@ -107,11 +107,11 @@ function test_Name_and_Silent()
     @test MOI.supports(model, MOI.Silent())
     MOI.set(model, MOI.Silent(), true)
     @test MOI.get(model, MOI.Silent()) == true
-    @test model.inner.silent == true
+    @test model.silent == true
 
     MOI.set(model, MOI.Silent(), false)
     @test MOI.get(model, MOI.Silent()) == false
-    @test model.inner.silent == false
+    @test model.silent == false
     return
 end
 
@@ -124,7 +124,7 @@ function test_TimeLimitSec()
     # Test setting a limit
     MOI.set(model, MOI.TimeLimitSec(), 500.0)
     @test MOI.get(model, MOI.TimeLimitSec()) == 500.0
-    @test model.timelimit == 500.0
+    @test model.time_limit == 500.0
 
     # Test resetting to default
     MOI.set(model, MOI.TimeLimitSec(), nothing)
