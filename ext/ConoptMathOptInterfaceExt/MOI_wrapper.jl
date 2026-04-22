@@ -14,6 +14,12 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     options::Dict{String, Any}  # options stored locally in the Optimizer.
                                 # These are copied across to the ConoptModel
 
+    # license
+    license_int_1::Union{Int,Nothing}
+    license_int_2::Union{Int,Nothing}
+    license_int_3::Union{Int,Nothing}
+    license_string::Union{String,Nothing}
+
     # parameters
     lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded
 
@@ -41,6 +47,10 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             0,                      # default number of threads
             false,                  # silent
             Dict{String, Any}(),    # options
+            nothing,                # license int 1
+            nothing,                # license int 2
+            nothing,                # license int 3
+            nothing,                # license string
             1e+15,                  # CONOPT's default Lim_Variable parameter
 
             MOI.Nonlinear.Model(),  # NLP model
@@ -336,6 +346,16 @@ function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
             @error "Invalid value for LogLevel <$log_level_value>. It must be between 1 and 4"
         end
         model.inner.log_level = Int(value)
+    elseif startswith(lowercase(option_name), "license")
+        if endswith(lowercase(option_name), "int_1")
+            model.license_int_1 = value
+        elseif endswith(lowercase(option_name), "int_2")
+            model.license_int_2 = value
+        elseif endswith(lowercase(option_name), "int_3")
+            model.license_int_3 = value
+        elseif endswith(lowercase(option_name), "string")
+            model.license_string = value
+        end
     else
         model.options[param.name] = value
     end
@@ -561,6 +581,11 @@ function _setup_options!(dest::Optimizer)
     dest.inner.log_level = dest.log_level
     dest.inner.threads = dest.threads
     dest.inner.silent = dest.silent
+
+    dest.inner.license.license_int_1 = dest.license_int_1
+    dest.inner.license.license_int_2 = dest.license_int_2
+    dest.inner.license.license_int_3 = dest.license_int_3
+    dest.inner.license.license_string = dest.license_string
 end
 
 """

@@ -1,12 +1,12 @@
 module LibConopt
 
-const libconopt = "/home/maher/Documents/GAMS/Development/conopt/download/conopt-linux-x86_64/lib/libconopt.so"
-
 using CEnum: CEnum, @cenum
 
 mutable struct coiRec
     CntInfo::NTuple{175, Cint}
 end
+
+import ..libconopt
 
 const coiHandle_t = Ptr{coiRec}
 

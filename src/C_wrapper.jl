@@ -184,6 +184,30 @@ mutable struct ConoptCallbacks
     end
 end
 
+mutable struct ConoptLicense
+    license_int_1::Union{Int,Nothing}
+    license_int_2::Union{Int,Nothing}
+    license_int_3::Union{Int,Nothing}
+    license_string::Union{String,Nothing}
+
+    function ConoptLicense(licint1::Int, licint2::Int, licint3::Int, licstr::String)
+        return new(
+                   licint1,
+                   licint2,
+                   licint3,
+                   licstr
+                  )
+    end
+    function ConoptLicense()
+        return new(
+                   nothing,
+                   nothing,
+                   nothing,
+                   nothing
+                  )
+    end
+end
+
 mutable struct ConoptModel
     cntvect::Ref{Ptr{Cvoid}}    # pointer to the CONOPT control vector
     silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
@@ -192,6 +216,8 @@ mutable struct ConoptModel
     threads::Int                # the number of threads to use
     options::Dict{String,Any}    # solver options
     option_offset::Int           # offset for invalid options
+
+    license::ConoptLicense      # storing the details of the Conopt license
 
     # problem Structures
     model_data::ModelData       # a cache of the model data
@@ -220,6 +246,7 @@ mutable struct ConoptModel
             0,
             Dict{String,Any}(),  # options
             0,
+            ConoptLicense(),
             ModelData(),
             JacobianStructure(),
             HessianStructure(),
@@ -275,6 +302,50 @@ function set_options!(model::ConoptModel)
 end
 
 
+"""
+    function set_license!(model::ConoptModel)
+
+    extracts the license integers and string either from Preference, user input or environment
+    variables and loads these into CONOPT.
+"""
+function set_license!(model::ConoptModel)
+    coierror = 0
+    ptr = model.cntvect[]
+
+    int1 = something(
+                    model.license.license_int_1,
+                    @load_preference("license_int_1"),
+                    parse(Int, get(ENV, "CONOPT_LICENSE_INT_1", "0"))
+                   )
+
+    # if the license int1 is not set, then we can exit immediately
+    if int1 == 0
+        return coierror
+    end
+
+    int2 = something(
+                    model.license.license_int_1,
+                    @load_preference("license_int_2"),
+                    parse(Int, get(ENV, "CONOPT_LICENSE_INT_2", "0"))
+                   )
+    int3 = something(
+                    get(model.options, "license_int_3", nothing),
+                    @load_preference("license_int_3"),
+                    parse(Int, get(ENV, "CONOPT_LICENSE_INT_3", "0"))
+                   )
+    lstr = something(
+                    get(model.options, "license_string", nothing),
+                    @load_preference("license_string"),
+                    get(ENV, "CONOPT_LICENSE_STRING", "")
+                   )
+
+    GC.@preserve lstr begin
+        coierror = LibConopt.COIDEF_License(ptr, Cint(int1), Cint(int2), Cint(int3), pointer(lstr))
+    end
+
+    return coierror
+end
+
 
 """
     function initialize!(model::ConoptModel)
@@ -320,8 +391,8 @@ function initialize!(model::ConoptModel)
     coierror += LibConopt.COIDEF_EmptyCol(ptr, 1)
 
     coierror += register_callbacks!(model)
-
     coierror += set_options!(model)
+    coierror += set_license!(model)
 
     coierror += LibConopt.COIDEF_UsrMem(ptr, pointer_from_objref(model))
 
