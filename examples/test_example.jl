@@ -10,6 +10,8 @@ model = Model(Conopt.Optimizer)
 @constraint(model, v1 + v2 == 1)
 @objective(model, Min, 1 + v1 + v2 + 2*v1^2 + v2^2 + v1*v2)
 
+MOI.set(model, MOI.RawOptimizerAttribute("Lim_Time"), 10)
+
 optimize!(model)
 
 if has_values(model)
