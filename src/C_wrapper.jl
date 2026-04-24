@@ -215,7 +215,7 @@ mutable struct ConoptModel
         cntvect = Ref{Ptr{Cvoid}}()
         coierror = LibConopt.COI_Create(cntvect)
         if coierror != 0
-            error("could not create a Conopt contol vector.")
+            error("could not create a Conopt control vector.")
         end
 
         model = new(
@@ -478,7 +478,7 @@ function _Status_cb(modsta, solsta, iter, objval, usrmem)::Cint
     model.solution_status.iterations = iter
     model.solution_status.objective = objval
 
-    model.solution_status.raw_status = "CONOPT stopped"
+    model.solution_status.raw_status = "CONOPT stopped" #= why do we need this? =#
 
     model.solution_status.status_stored = true;
 

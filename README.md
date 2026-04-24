@@ -1,8 +1,6 @@
 # Conopt.jl
 
-[![Build Status](https://github.com/jump-dev/Conopt.jl/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/jump-dev/Conopt.jl/actions?query=workflow%3ACI)
-
-[Conopt.jl](https://github.com/jump-dev/Conopt.jl) is a Julia wrapper for the [CONOPT](https://conopt.gams.com/) solver.
+[Conopt.jl](https://github.com/GAMS-dev/Conopt.jl) is a Julia wrapper for the [CONOPT](https://conopt.gams.com/) solver.
 
 It has two components:
 
@@ -11,17 +9,15 @@ It has two components:
 
 ## Affiliation
 
-This wrapper is maintained by the JuMP community with help from GAMS.
+This wrapper is maintained by the JuMP community with help from GAMS. 
+<!-- really? isn't us who maintains it? -->
 
 ## License
 
-`Conopt.jl` is licensed under the [MIT License](https://github.com/jump-dev/Conopt.jl/blob/master/LICENSE).
+`Conopt.jl` is licensed under the [MIT License](https://github.com/GAMS-dev/Conopt.jl/blob/master/LICENSE).
 
 The underlying solver, CONOPT, is proprietary software from GAMS. You must purchase a license to use it.
-
-## Providing a license
-
-The underlying solver, CONOPT, is proprietary software from GAMS. You must purchase a license to use it.
+<!-- please mention that there are free demo licenses and the academic program -->
 
 There are a number of ways to provide a license to `Conopt.jl`. They are loaded with the following precedence (from highest to lowest):
 
@@ -63,11 +59,11 @@ export CONOPT_LICENSE_STRING="<your-license-string>"
 
 Contact [GAMS support](mailto:support@gams.com) if you encounter any problems using this interface or the solver.
 
-If you have a reproducible example of a bug, please [open a GitHub issue](https://github.com/jump-dev/Conopt.jl/issues/new).
+If you have a reproducible example of a bug, please [open a GitHub issue](https://github.com/GAMS-dev/Conopt.jl/issues/new).
 
 ## Installation
 
-To use `Conopt.jl`, you must have a local installation of the CONOPT solver libraries. Please see the [GAMS website](https://www.gams.com/download/) for information on obtaining CONOPT.
+To use `Conopt.jl`, you must have a local installation of the CONOPT solver libraries. Please see the [CONOPT website](https://conopt.gams.com/download/) for information on obtaining CONOPT.
 
 `Conopt.jl` needs to know the location of the CONOPT shared library (e.g., `libconopt.so`, `conopt.dll`, or `conopt.dylib`).
 Tell `Conopt.jl` where to find the library by calling `Conopt.set_library_path`:
@@ -90,8 +86,8 @@ You can use Conopt with JuMP as follows:
 ```julia
 using JuMP, Conopt
 model = Model(Conopt.Optimizer)
-set_attribute(model, "time_limit", 60.0)
-set_attribute(model, "log_level", 0)
+set_attribute(model, "time_limit", 60.0) #= does this work? Shouldn't it be set_attribute(model, ::MOI.TimeLimitSec, 60.0) / time_limit is not a CONOPT option =#
+set_attribute(model, "log_level", 0) #= does this work? in the code it seems it is called LogLevel =#
 ```
 
 ### Type stability
@@ -162,16 +158,18 @@ List of supported model attributes:
  * [`MOI.NumberOfThreads`](@ref)
  * [`MOI.ObjectiveSense`](@ref)
  * [`MOI.SolveTimeSec`](@ref)
- * [`MOI.BarrierIterations`](@ref)
+ * [`MOI.BarrierIterations`](@ref) <!-- but we don't have a barrier algorithm -->
 
 
 ## Options
+
+<!-- it feels that this should either be a subsection of JuMP or MOI -->
 
 A list of available options is provided in the [CONOPT reference manual](https://conopt.gams.com/).
 
 Set options using `MOI.RawOptimizerAttribute`:
 ```julia
-set_attribute(model, "time_limit", 100.0)
+set_attribute(model, "time_limit", 100.0) #= see above =#
 ```
 
 ## C API

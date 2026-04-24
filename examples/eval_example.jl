@@ -33,12 +33,10 @@ println("Primal status: ", primal_status(model))
 
 if termination_status(model) == MOI.OPTIMAL ||
     termination_status(model) == MOI.LOCALLY_SOLVED
-    println("
-Optimal solution found")
+    println("Optimal solution found")
     println("x = ", value(x))
     println("y = ", value(y))
     println("Objective value: ", objective_value(model))
 else
-    println("
-No optimal solution found.")
+    println("No optimal solution found.")
 end

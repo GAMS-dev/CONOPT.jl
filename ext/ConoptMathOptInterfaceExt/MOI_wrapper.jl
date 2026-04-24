@@ -21,7 +21,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     license_string::Union{String, Nothing}
 
     # parameters
-    lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded
+    lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded #= this doesn't seem to be used anywhere =#
 
     # NLP data
     nlp_model::Union{Nothing, MOI.Nonlinear.Model} # specialised NLP model structure
@@ -168,7 +168,7 @@ function Base.summary(io::IO, model::Optimizer)
 end
 
 function MOI.is_empty(model::Optimizer)
-    # TODO actually check if the model is empty
+    # TODO actually check if the model is empty #= this TODO still valid? =#
     return Conopt.is_empty(model.inner)
 end
 
@@ -241,7 +241,7 @@ end
 MOI.supports(::Optimizer, ::MOI.TimeLimitSec) = true
 
 function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, value::Real)
-    if value == model.time_limit
+    if value == model.time_limit #= why do you do these checks first? =#
         return nothing
     end
     model.time_limit = value
@@ -250,7 +250,7 @@ end
 
 function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, ::Nothing)
     # removing the time limit -> set the time limit to CONOPT's default
-    if 1e+06 == model.time_limit
+    if 1e+06 == model.time_limit #= if we change the default in conopt, you will likely forget this, is there a better way of achieving this without using the explicit time limit? Maybe set time_limit to nothing? =#
         return nothing
     end
     model.time_limit = 1e+06
@@ -261,7 +261,7 @@ MOI.get(model::Optimizer, ::MOI.TimeLimitSec) = model.time_limit
 
 
 # objective and solution limits - currently no way to set these in CONOPT
-MOI.supports(::Optimizer, ::MOI.ObjectiveLimit) = false
+MOI.supports(::Optimizer, ::MOI.ObjectiveLimit) = false #= if it is false, you don't need to specify this, do you? =#
 MOI.supports(::Optimizer, ::MOI.SolutionLimit) = false
 
 
@@ -301,14 +301,14 @@ function MOI.supports(::Optimizer, ::MOI.VariablePrimalStart, ::Type{MOI.Variabl
     return true
 end
 
-function MOI.get(model::Optimizer, attr::MOI.VariablePrimalStart, vi::MOI.VariableIndex)
+function MOI.get(model::Optimizer, ::MOI.VariablePrimalStart, vi::MOI.VariableIndex)
     MOI.throw_if_not_valid(model, vi)
     return model.inner.model_data.variable_primal_start[_column(model, vi)]
 end
 
 function MOI.set(
     model::Optimizer,
-    attr::MOI.VariablePrimalStart,
+    ::MOI.VariablePrimalStart,
     vi::MOI.VariableIndex,
     value::Union{Real, Nothing},
 )
@@ -429,7 +429,7 @@ MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
     CONOPT only needs these row-by-row.
 """
 function _eval_f_ini(
-    model::Conopt.ConoptModel, x::Vector{Float64}, rowlist::Vector{Cint}, mode::Cint
+    model::Conopt.ConoptModel, x::Vector{Float64}, ::Vector{Cint}, mode::Cint
 )::Cint
     eval_cache = model.user_data::EvaluationCache
 
@@ -500,13 +500,11 @@ function _eval_hess(
     model::Conopt.ConoptModel,
     x::Vector{Float64},
     u::Vector{Float64},
-    rowno::Vector{Cint},
-    colno::Vector{Cint},
+    ::Vector{Cint},
+    ::Vector{Cint},
     value::Vector{Float64},
 )::Cint
     eval_cache = model.user_data::EvaluationCache
-    n_vars = model.model_data.num_variables
-    n_cons = model.model_data.num_constraints
     nnz_hess = length(eval_cache.hessian_map)
 
     # mapping the multipliers between CONOPT and MOI
@@ -619,7 +617,7 @@ function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
     dest.var_index_to_pos = zeros(Int, max_index)
 
     dest.inner.model_data.variable_primal_start = zeros(Float64, n_vars)
-    dest.inner.model_data.variable_lower = fill(-CONOPT_INF, n_vars)
+    dest.inner.model_data.variable_lower = fill(-CONOPT_INF, n_vars) #= ah, that's probably where you would need lim_variable, because if the user chooses a different value for CONOPT, this would not be correct =#
     dest.inner.model_data.variable_upper = fill(CONOPT_INF, n_vars)
 
     for (i, v) in enumerate(dest.variable_indices)
@@ -704,7 +702,7 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
                 end
             end
         elseif f == MOI.VectorOfVariables
-            if set <: MOI.HyperRectangle
+            if set <: MOI.HyperRectangle #= I think this hyper rectangle, you could remove completely, because you are just iterating over it anyway. if you do not support this I bet MOI will iterate over it itself =#
                 for index in conss_indices
                     cons_set = MOI.get(src, MOI.ConstraintSet(), index)
                     cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
@@ -1085,7 +1083,7 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
 
     print_model_representation(dest.inner.jac_structure, dest.inner.model_data)
 
-    result = Conopt.solve!(dest.inner)
+    Conopt.solve!(dest.inner)
 
     dest.solve_time = time() - start_time
 
@@ -1207,7 +1205,7 @@ end
 
 
 # the number of barrier iterations
-# NOTE: Conopt does perform the Barrier algorithm, so this is the iterations for the GRG algorithm.
+# NOTE: Conopt does not perform the Barrier algorithm, so this is the iterations for the GRG algorithm.
 MOI.get(model::Optimizer, ::MOI.BarrierIterations) = model.inner.solution_status.iterations
 
 
