@@ -39,12 +39,18 @@ end
 
 function __init__()
     if libconopt == "conopt" || !isfile(libconopt)
-        @warn """
-        CONOPT library not found!
-        Please set the path to the CONOPT shared library using:
-        `Conopt.set_library_path("/path/to/libconopt.so")`
-        and then restart Julia.
-        """
+        # Check if Julia is currently generating a precompile cache (.ji file)
+        is_precompiling = ccall(:jl_generating_output, Cint, ()) != 0
+
+        if !is_precompiling
+            @warn """
+            CONOPT library not found!
+            Please set the path to the CONOPT shared library using:
+            `Conopt.set_library_path("/path/to/libconopt.so")`
+            and then restart Julia.
+            """
+        end
+
         # Return early so we don't attempt to load or verify the missing library
         return nothing
     end
