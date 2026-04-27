@@ -7,10 +7,13 @@ const CONOPT_INF_DEFAULT = 1e15
 mutable struct Optimizer <: MOI.AbstractOptimizer
     inner::Conopt.ConoptModel
     name::String                # name of the model
+
+    # parameters
     time_limit::Union{Real,Nothing}    # time limit in seconds
     log_level::Int              # the log level
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
     silent::Bool                # should the output be disabled
+    lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded
     options::Dict{String, Any}  # options stored locally in the Optimizer.
     # These are copied across to the ConoptModel
 
@@ -19,9 +22,6 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     license_int_2::Union{Int, Nothing}
     license_int_3::Union{Int, Nothing}
     license_string::Union{String, Nothing}
-
-    # parameters
-    lim_variable::Real           # largest absolute value of a variable beyond which it is considered unbounded #= this doesn't seem to be used anywhere =#
 
     # NLP data
     nlp_model::Union{Nothing, MOI.Nonlinear.Model} # specialised NLP model structure
@@ -46,12 +46,12 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             2,                      # the default log level
             0,                      # default number of threads
             false,                  # silent
+            CONOPT_INF_DEFAULT,     # CONOPT's default Lim_Variable parameter
             Dict{String, Any}(),    # options
             nothing,                # license int 1
             nothing,                # license int 2
             nothing,                # license int 3
             nothing,                # license string
-            CONOPT_INF_DEFAULT,     # CONOPT's default Lim_Variable parameter
             MOI.Nonlinear.Model(),  # NLP model
             MOI.Nonlinear.SparseReverseMode(), # automatic differentiation
             MOI.VariableIndex[],        # list of variable indices
