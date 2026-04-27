@@ -122,7 +122,6 @@ const _SETS = Union{
     MOI.GreaterThan{Float64},
     MOI.LessThan{Float64},
     MOI.EqualTo{Float64},
-    MOI.HyperRectangle{Float64},
 }
 
 const _FUNCTIONS = Union{
@@ -349,12 +348,6 @@ end
 ###
 
 function MOI.supports_constraint(::Optimizer, ::Type{<:_FUNCTIONS}, ::Type{<:_SETS})
-    return true
-end
-
-function MOI.supports_constraint(
-    ::Optimizer, ::Type{MOI.VectorOfVariables}, ::Type{MOI.HyperRectangle{Float64}}
-)
     return true
 end
 
@@ -687,22 +680,6 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
                         lower=cons_set.lower,
                         upper=cons_set.upper,
                     )
-                end
-            end
-        elseif f == MOI.VectorOfVariables
-            if set <: MOI.HyperRectangle #= I think this hyper rectangle, you could remove completely, because you are just iterating over it anyway. if you do not support this I bet MOI will iterate over it itself =#
-                for index in conss_indices
-                    cons_set = MOI.get(src, MOI.ConstraintSet(), index)
-                    cons_function = MOI.get(src, MOI.ConstraintFunction(), index)
-                    for (i, var_ix) in enumerate(cons_function.variables)
-                        pos = dest.var_index_to_pos[var_ix.value]
-                        _update_variable_bounds!(
-                            dest.inner.model_data,
-                            pos;
-                            lower=cons_set.lower[i],
-                            upper=cons_set.upper[i],
-                        )
-                    end
                 end
             end
         else
