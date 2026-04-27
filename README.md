@@ -16,8 +16,13 @@ This wrapper is maintained by the JuMP community with help from GAMS.
 
 `Conopt.jl` is licensed under the [MIT License](https://github.com/GAMS-dev/Conopt.jl/blob/master/LICENSE).
 
-The underlying solver, CONOPT, is proprietary software from GAMS. You must purchase a license to use it.
-<!-- please mention that there are free demo licenses and the academic program -->
+The underlying solver, CONOPT, is proprietary software from GAMS.
+There are various [licensing options](https://conopt.gams.com/licensing/) for CONOPT.
+These include Demo, Evaluation, Academic and Full licences.
+
+The Academic license gives you full access to CONOPT, if you satisfy the following:
+- affiliated with a recognized academic institution, and
+- intent to use CONOPT for non-commercial teaching and research.
 
 There are a number of ways to provide a license to `Conopt.jl`. They are loaded with the following precedence (from highest to lowest):
 
@@ -27,10 +32,10 @@ You can provide the license details as raw optimizer attributes when creating a 
 ```julia
 using JuMP, Conopt
 model = Model(Conopt.Optimizer)
-set_attribute(model, "licint1", licint1)
-set_attribute(model, "licint2", licint2)
-set_attribute(model, "licint3", licint3)
-set_attribute(model, "licstring", "your-license-string")
+set_attribute(model, "license_int_1", license_int_1)
+set_attribute(model, "license_int_2", license_int_2)
+set_attribute(model, "license_int_3", license_int_3)
+set_attribute(model, "license_string", "your-license-string")
 ```
 Alternatively, when using the low-level C API, you can pass the license information directly to the `Conopt.ConoptModel` constructor.
 
@@ -40,7 +45,7 @@ The recommended way to provide a license is to save it to your local environment
 Use the `Conopt.set_license` function with the integers and string from your GAMS license file:
 ```julia
 import Conopt
-Conopt.set_license(licint1, licint2, licint3, "your-license-string")
+Conopt.set_license(license_int_1, license_int_2, license_int_3, "your-license-string")
 ```
 This saves the license details to your `LocalPreferences.toml` file, so you only need to do this once per project.
 
@@ -49,9 +54,9 @@ This saves the license details to your `LocalPreferences.toml` file, so you only
 You can also provide the license via environment variables. This is useful for CI or other automated environments.
 
 ```bash
-export CONOPT_LICENSE_INT_1=<licint1>
-export CONOPT_LICENSE_INT_2=<licint2>
-export CONOPT_LICENSE_INT_3=<licint3>
+export CONOPT_LICENSE_INT_1=<license_int_1>
+export CONOPT_LICENSE_INT_2=<license_int_2>
+export CONOPT_LICENSE_INT_3=<license_int_3>
 export CONOPT_LICENSE_STRING="<your-license-string>"
 ```
 
@@ -86,8 +91,8 @@ You can use Conopt with JuMP as follows:
 ```julia
 using JuMP, Conopt
 model = Model(Conopt.Optimizer)
-set_attribute(model, "time_limit", 60.0) #= does this work? Shouldn't it be set_attribute(model, ::MOI.TimeLimitSec, 60.0) / time_limit is not a CONOPT option =#
-set_attribute(model, "log_level", 0) #= does this work? in the code it seems it is called LogLevel =#
+set_attribute(model, "lim_iteration", 100)
+set_attribute(model, "log_level", 0)
 ```
 
 ### Type stability
@@ -158,18 +163,20 @@ List of supported model attributes:
  * [`MOI.NumberOfThreads`](@ref)
  * [`MOI.ObjectiveSense`](@ref)
  * [`MOI.SolveTimeSec`](@ref)
- * [`MOI.BarrierIterations`](@ref) <!-- but we don't have a barrier algorithm -->
+ * [`MOI.BarrierIterations`](@ref)
+    - NOTE: CONOPT doesn't executes a GRG algorithm, instead of a barrier algorithm.
+      The iterations reported by this attribute are for the GRG algorithm.
 
 
 ## Options
 
 <!-- it feels that this should either be a subsection of JuMP or MOI -->
 
-A list of available options is provided in the [CONOPT reference manual](https://conopt.gams.com/).
+A list of available options is provided in the [CONOPT reference manual](https://conopt.gams.com/docs/latest/group__API__ADDITIONAL__INFORMATION.html#API_OPTIONS).
 
 Set options using `MOI.RawOptimizerAttribute`:
 ```julia
-set_attribute(model, "time_limit", 100.0) #= see above =#
+set_attribute(model, "lim_iteration", 100)
 ```
 
 ## C API

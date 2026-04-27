@@ -324,7 +324,7 @@ MOI.supports(::Optimizer, ::MOI.RawOptimizerAttribute) = true
 function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
     option_name = param.name
 
-    if option_name == "LogLevel"
+    if option_name == "log_level"
         log_level_value = Int(value)
         if log_level_value < 1 || log_level_value > 4
             @error "Invalid value for LogLevel <$log_level_value>. It must be between 1 and 4"
