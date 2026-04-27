@@ -119,7 +119,7 @@ function test_TimeLimitSec()
     model = Conopt.Optimizer()
 
     @test MOI.supports(model, MOI.TimeLimitSec())
-    @test MOI.get(model, MOI.TimeLimitSec()) == 1e+06 # Your default
+    @test MOI.get(model, MOI.TimeLimitSec()) == nothing # Your default
 
     # Test setting a limit
     MOI.set(model, MOI.TimeLimitSec(), 500.0)
@@ -128,7 +128,7 @@ function test_TimeLimitSec()
 
     # Test resetting to default
     MOI.set(model, MOI.TimeLimitSec(), nothing)
-    @test MOI.get(model, MOI.TimeLimitSec()) == 1e+06
+    @test MOI.get(model, MOI.TimeLimitSec()) == nothing
     return nothing
 end
 
@@ -164,17 +164,17 @@ function test_RawOptimizerAttribute()
     bad_attr = MOI.RawOptimizerAttribute("does_not_exist")
     @test_throws MOI.GetAttributeNotAllowed MOI.get(model, bad_attr)
 
-    # Test the custom LogLevel interceptor
-    log_attr = MOI.RawOptimizerAttribute("LogLevel")
+    # Test the custom log_level interceptor
+    log_attr = MOI.RawOptimizerAttribute("log_level")
 
-    # Valid LogLevel
+    # Valid log_level
     MOI.set(model, log_attr, 2)
     @test model.inner.log_level == 2
 
-    # Invalid LogLevel triggers @error macro
+    # Invalid log_level triggers @error macro
     # (Testing that Julia's @error logging system catches your error message)
-    @test_logs (:error, r"Invalid value for LogLevel") MOI.set(model, log_attr, 5)
-    @test_logs (:error, r"Invalid value for LogLevel") MOI.set(model, log_attr, 0)
+    @test_logs (:error, r"Invalid value for log_level") MOI.set(model, log_attr, 5)
+    @test_logs (:error, r"Invalid value for log_level") MOI.set(model, log_attr, 0)
     return nothing
 end
 

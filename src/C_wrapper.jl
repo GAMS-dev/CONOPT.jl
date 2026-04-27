@@ -192,7 +192,7 @@ mutable struct ConoptModel
     cntvect::Ref{Ptr{Cvoid}}    # pointer to the CONOPT control vector
     silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
     log_level::Int              # the log level for the Conopt output. This matches the C++ verbosity levels
-    time_limit::Float64         # the solver time limit
+    time_limit::Union{Float64,Nothing}  # the solver time limit
     threads::Int                # the number of threads to use
     options::Dict{String, Any}    # solver options
     option_offset::Int           # offset for invalid options
@@ -222,7 +222,7 @@ mutable struct ConoptModel
             cntvect,
             false,
             2,
-            1e+06,
+            nothing,
             0,
             Dict{String, Any}(),  # options
             0,
@@ -274,7 +274,9 @@ function set_options!(model::ConoptModel)
     coierror = 0
     ptr = model.cntvect[]
 
-    coierror += LibConopt.COIDEF_ResLim(ptr, model.time_limit)
+    if model.time_limit != nothing
+        coierror += LibConopt.COIDEF_ResLim(ptr, model.time_limit)
+    end
     coierror += LibConopt.COIDEF_ThreadS(ptr, model.threads)
 
     return coierror
@@ -472,13 +474,40 @@ end
 function _Status_cb(modsta, solsta, iter, objval, usrmem)::Cint
     model = unsafe_pointer_to_objref(usrmem)::ConoptModel
 
+    solve_status = SolveStatus(solsta)
     model.solution_status.model_status = ModelStatus(modsta)
-    model.solution_status.solve_status = SolveStatus(solsta)
+    model.solution_status.solve_status = solve_status
 
     model.solution_status.iterations = iter
     model.solution_status.objective = objval
 
-    model.solution_status.raw_status = "CONOPT stopped" #= why do we need this? =#
+    raw_status = "CONOPT stopped"
+    if solve_status == SolveStatus_Normal_Completion
+        raw_status = "Normal completion"
+    elseif solve_status == SolveStatus_Iteration_Interrupt
+        raw_status = "Interation limit interrupt"
+    elseif solve_status == SolveStatus_Timelimit
+        raw_status = "Time limit interrupt"
+    elseif solve_status == SolveStatus_Terminated_Solver
+        raw_status = "Terminated - triggered by the solver"
+    elseif solve_status == SolveStatus_Evaluation_Error_Limit
+        raw_status = "Terminated - evaluation error limit"
+    elseif solve_status == SolveStatus_User_Interrupt
+        raw_status = "Terminated - user interrupt"
+    elseif solve_status == SolveStatus_Error_Setup
+        raw_status = "Error in setup"
+    elseif solve_status == SolveStatus_Solver_Error_NoPoint
+        raw_status = "Solver error - no point"
+    elseif solve_status == SolveStatus_Solver_Error_Point
+        raw_status = "Solver error - issue with point"
+    elseif solve_status == SolveStatus_General_System_Error
+        raw_status = "General system error"
+    elseif solve_status == SolveStatus_Terminated_Quick_Mode
+        raw_status = "Terminated - quick mode"
+    elseif solve_status == SolveStatus_Unknown
+        raw_status = "Terminated - unknown source"
+    end
+    model.solution_status.raw_status = raw_status
 
     model.solution_status.status_stored = true;
 

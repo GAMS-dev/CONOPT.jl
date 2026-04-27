@@ -2,12 +2,12 @@
 ### Structures and constants
 ###
 
-const CONOPT_INF = 1e15
+const CONOPT_INF_DEFAULT = 1e15
 
 mutable struct Optimizer <: MOI.AbstractOptimizer
     inner::Conopt.ConoptModel
     name::String                # name of the model
-    time_limit::Real            # time limit in seconds
+    time_limit::Union{Real,Nothing}    # time limit in seconds
     log_level::Int              # the log level
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
     silent::Bool                # should the output be disabled
@@ -42,7 +42,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
         model = new(
             Conopt.ConoptModel(),
             "Model",                # model name
-            1e+06,                  # time limit
+            nothing,                # time limit
             2,                      # the default log level
             0,                      # default number of threads
             false,                  # silent
@@ -51,7 +51,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             nothing,                # license int 2
             nothing,                # license int 3
             nothing,                # license string
-            1e+15,                  # CONOPT's default Lim_Variable parameter
+            CONOPT_INF_DEFAULT,     # CONOPT's default Lim_Variable parameter
             MOI.Nonlinear.Model(),  # NLP model
             MOI.Nonlinear.SparseReverseMode(), # automatic differentiation
             MOI.VariableIndex[],        # list of variable indices
@@ -168,7 +168,6 @@ function Base.summary(io::IO, model::Optimizer)
 end
 
 function MOI.is_empty(model::Optimizer)
-    # TODO actually check if the model is empty #= this TODO still valid? =#
     return Conopt.is_empty(model.inner)
 end
 
@@ -241,32 +240,17 @@ end
 MOI.supports(::Optimizer, ::MOI.TimeLimitSec) = true
 
 function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, value::Real)
-    if value == model.time_limit #= why do you do these checks first? =#
-        return nothing
-    end
     model.time_limit = value
     return nothing
 end
 
 function MOI.set(model::Optimizer, ::MOI.TimeLimitSec, ::Nothing)
     # removing the time limit -> set the time limit to CONOPT's default
-    if 1e+06 == model.time_limit #= if we change the default in conopt, you will likely forget this, is there a better way of achieving this without using the explicit time limit? Maybe set time_limit to nothing? =#
-        return nothing
-    end
-    model.time_limit = 1e+06
+    model.time_limit = nothing
     return nothing
 end
 
 MOI.get(model::Optimizer, ::MOI.TimeLimitSec) = model.time_limit
-
-
-# objective and solution limits - currently no way to set these in CONOPT
-MOI.supports(::Optimizer, ::MOI.ObjectiveLimit) = false #= if it is false, you don't need to specify this, do you? =#
-MOI.supports(::Optimizer, ::MOI.SolutionLimit) = false
-
-
-# node limit - CONOPT isn't a branch and bound solver, so this makes no sense
-MOI.supports(::Optimizer, ::MOI.NodeLimit) = false
 
 
 # number of threads
@@ -324,10 +308,10 @@ MOI.supports(::Optimizer, ::MOI.RawOptimizerAttribute) = true
 function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
     option_name = param.name
 
-    if option_name == "log_level"
+    if lowercase(option_name) == "log_level"
         log_level_value = Int(value)
         if log_level_value < 1 || log_level_value > 4
-            @error "Invalid value for LogLevel <$log_level_value>. It must be between 1 and 4"
+            @error "Invalid value for log_level <$log_level_value>. It must be between 1 and 4"
         end
         model.inner.log_level = Int(value)
     elseif startswith(lowercase(option_name), "license")
@@ -340,8 +324,12 @@ function MOI.set(model::Optimizer, param::MOI.RawOptimizerAttribute, value)
         elseif endswith(lowercase(option_name), "string")
             model.license_string = value
         end
+    elseif lowercase(option_name) == "lim_variable"
+        # we handle lim_variable separately so that we have the value available in the Optimizer
+        model.lim_variable = value
+        model.options[option_name] = value
     else
-        model.options[param.name] = value
+        model.options[option_name] = value
     end
 
     return nothing
@@ -617,8 +605,8 @@ function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
     dest.var_index_to_pos = zeros(Int, max_index)
 
     dest.inner.model_data.variable_primal_start = zeros(Float64, n_vars)
-    dest.inner.model_data.variable_lower = fill(-CONOPT_INF, n_vars) #= ah, that's probably where you would need lim_variable, because if the user chooses a different value for CONOPT, this would not be correct =#
-    dest.inner.model_data.variable_upper = fill(CONOPT_INF, n_vars)
+    dest.inner.model_data.variable_lower = fill(-dest.lim_variable, n_vars) #= ah, that's probably where you would need lim_variable, because if the user chooses a different value for CONOPT, this would not be correct =#
+    dest.inner.model_data.variable_upper = fill(dest.lim_variable, n_vars)
 
     for (i, v) in enumerate(dest.variable_indices)
         dest.var_index_to_pos[v.value] = i
@@ -755,7 +743,7 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
         obj_expr = MOI.get(src, MOI.ObjectiveFunction{F}())
 
         cons_index = MOI.Nonlinear.add_constraint(
-            dest.nlp_model, obj_expr, MOI.Interval(-CONOPT_INF, CONOPT_INF)
+            dest.nlp_model, obj_expr, MOI.Interval(-dest.lim_variable, dest.lim_variable)
         )
 
         dest.inner.model_data.num_constraints += 1

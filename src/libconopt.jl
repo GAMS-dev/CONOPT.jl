@@ -435,12 +435,6 @@ function COIDEF_UsrMem(cntvect, usrmem)
     )
 end
 
-const CONOPT_VERSION_MAJOR = 4 #= hm, so you need to update this file whenever we release a new version? maybe delete these and let users call COIGET_Version =#
-
-const CONOPT_VERSION_MINOR = 39
-
-const CONOPT_VERSION_PATCH = 0
-
 # Skipping MacroDefinition: COI_API __attribute__ ( ( __visibility__ ( "default" ) ) )
 
 end # module
