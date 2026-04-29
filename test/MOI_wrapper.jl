@@ -6,33 +6,6 @@ using Test
 
 import MathOptInterface as MOI
 
-const OPTIMIZER = MOI.instantiate(
-    MOI.OptimizerWithAttributes(CONOPT.Optimizer, MOI.Silent() => true)
-)
-
-const BRIDGED = MOI.instantiate(
-    MOI.OptimizerWithAttributes(CONOPT.Optimizer, MOI.Silent() => true);
-    with_bridge_type=Float64,
-)
-
-# See the docstring of MOI.Test.Config for other arguments.
-const CONFIG = MOI.Test.Config(;
-    # Modify tolerances as necessary.
-    atol=1e-6,
-    rtol=1e-6,
-    infeasible_status=MOI.LOCALLY_INFEASIBLE,
-    optimal_status=MOI.LOCALLY_SOLVED,
-    # Pass attributes or MOI functions to `exclude` to skip tests that
-    # rely on this functionality.
-    exclude=Any[
-        MOI.VariableName,
-        MOI.delete,
-        MOI.ConstraintDual,
-        MOI.ConstraintBasisStatus,
-        MOI.DualObjectiveValue,
-    ],
-)
-
 """
     runtests()
 
@@ -57,30 +30,36 @@ Pass arguments to `exclude` to skip tests for functionality that is not
 implemented or that your solver doesn't support.
 """
 function test_runtests()
+    model = MOI.instantiate(
+        Conopt.Optimizer;
+        with_bridge_type=Float64,
+        with_cache_type=Float64,
+    )
+    MOI.set(model, MOI.Silent(), true)
+    config = MOI.Test.Config(;
+        # Modify tolerances as necessary.
+        atol=1e-6,
+        rtol=1e-6,
+        infeasible_status=MOI.LOCALLY_INFEASIBLE,
+        optimal_status=MOI.LOCALLY_SOLVED,
+        # Pass attributes or MOI functions to `exclude` to skip tests that
+        # rely on this functionality.
+        exclude=Any[
+            MOI.ConstraintDual,
+            MOI.ConstraintBasisStatus,
+            MOI.DualObjectiveValue,
+        ],
+    )
     MOI.Test.runtests(
-        BRIDGED,
-        CONFIG;
-        include=String[
-            "test_linear_",
-            "test_quadratic_",
-            "test_nonlinear",
-            "test_model_",
-            "test_solver_",
-            "test_variable_",
-            "test_objective_",
-        ],
+        model,
+        config;
         exclude=[
-            "test_nonlinear_hs071_global", # CONOPT is a local solver
+            # CONOPT is a local solver
+            r"^test_nonlinear_hs071_global$",
         ],
-        # This argument is useful to prevent tests from failing on future
-        # releases of MOI that add new tests. Don't let this number get too far
-        # behind the current MOI release though. You should periodically check
-        # for new tests to fix bugs and implement new features.
-        #exclude_tests_after = v"0.10.5",
         verbose=true,
     )
-
-    return nothing
+    return
 end
 
 """
