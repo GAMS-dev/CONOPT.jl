@@ -1,6 +1,6 @@
-# Conopt.jl
+# CONOPT.jl
 
-[Conopt.jl](https://github.com/GAMS-dev/Conopt.jl) is a Julia wrapper for the [CONOPT](https://conopt.gams.com/) solver.
+[CONOPT.jl](https://github.com/GAMS-dev/CONOPT.jl) is a Julia wrapper for the [CONOPT](https://conopt.gams.com/) solver.
 
 It has two components:
 
@@ -13,7 +13,7 @@ This wrapper is maintained by GAMS Software GmbH.
 
 ## License
 
-`Conopt.jl` is licensed under the [MIT License](https://github.com/GAMS-dev/Conopt.jl/blob/master/LICENSE).
+`CONOPT.jl` is licensed under the [MIT License](https://github.com/GAMS-dev/CONOPT.jl/blob/master/LICENSE).
 
 The underlying solver, CONOPT, is proprietary software from GAMS.
 There are various [licensing options](https://conopt.gams.com/licensing/) for CONOPT.
@@ -63,14 +63,14 @@ export CONOPT_LICENSE_STRING="<your-license-string>"
 
 Contact [GAMS support](mailto:support@gams.com) if you encounter any problems using this interface or the solver.
 
-If you have a reproducible example of a bug, please [open a GitHub issue](https://github.com/GAMS-dev/Conopt.jl/issues/new).
+If you have a reproducible example of a bug, please [open a GitHub issue](https://github.com/GAMS-dev/CONOPT.jl/issues/new).
 
 ## Installation
 
-To use `Conopt.jl`, you must have a local installation of the CONOPT solver libraries. Please see the [CONOPT website](https://conopt.gams.com/download/) for information on obtaining CONOPT.
+To use `CONOPT.jl`, you must have a local installation of the CONOPT solver libraries. Please see the [CONOPT website](https://conopt.gams.com/download/) for information on obtaining CONOPT.
 
-`Conopt.jl` needs to know the location of the CONOPT shared library (e.g., `libconopt.so`, `conopt.dll`, or `conopt.dylib`).
-Tell `Conopt.jl` where to find the library by calling `Conopt.set_library_path`:
+`CONOPT.jl` needs to know the location of the CONOPT shared library (e.g., `libconopt.so`, `conopt.dll`, or `conopt.dylib`).
+Tell `CONOPT.jl` where to find the library by calling `Conopt.set_library_path`:
 ```julia
 import Conopt
 # This is an example, use the actual path to your CONOPT library
@@ -78,7 +78,7 @@ Conopt.set_library_path("/path/to/your/conopt/library/libconopt.so")
 ```
 This preference is saved to a `LocalPreferences.toml` file in your current project. You will need to restart your Julia session for the change to take effect.
 
-Once the library path is set, you can install `Conopt.jl` using the Julia package manager:
+Once the library path is set, you can install `CONOPT.jl` using the Julia package manager:
 ```julia
 import Pkg
 Pkg.add("Conopt")
@@ -86,7 +86,7 @@ Pkg.add("Conopt")
 
 ## Use with JuMP
 
-You can use Conopt with JuMP as follows:
+You can use CONOPT with JuMP as follows:
 ```julia
 using JuMP, Conopt
 model = Model(Conopt.Optimizer)
@@ -96,7 +96,7 @@ set_attribute(model, "log_level", 0)
 
 ### Type stability
 
-Conopt.jl moves the `Conopt.Optimizer` object to a package extension. As a
+CONOPT.jl moves the `Conopt.Optimizer` object to a package extension. As a
 consequence, `Conopt.Optimizer` is now type unstable, and it will be inferred as
 `Conopt.Optimizer()::Any`.
 
@@ -125,7 +125,7 @@ model = Model(ConoptMathOptInterfaceExt.Optimizer)
 
 ## MathOptInterface API
 
-The Conopt optimizer supports the following constraints and attributes.
+The CONOPT optimizer supports the following constraints and attributes.
 
 List of supported objective functions:
 
@@ -178,7 +178,7 @@ set_attribute(model, "lim_iteration", 100)
 
 ## C API
 
-Conopt.jl provides a low-level wrapper around the CONOPT C API, which is used by the MathOptInterface implementation.
+CONOPT.jl provides a low-level wrapper around the CONOPT C API, which is used by the MathOptInterface implementation.
 
 The main entry point for the low-level API is the `Conopt.ConoptModel` object. Using this object requires the user to manually manage memory and callbacks.
 
