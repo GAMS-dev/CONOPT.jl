@@ -9,8 +9,7 @@ It has two components:
 
 ## Affiliation
 
-This wrapper is maintained by the JuMP community with help from GAMS. 
-<!-- really? isn't us who maintains it? -->
+This wrapper is maintained by GAMS Software GmbH.
 
 ## License
 
@@ -169,8 +168,6 @@ List of supported model attributes:
 
 
 ## Options
-
-<!-- it feels that this should either be a subsection of JuMP or MOI -->
 
 A list of available options is provided in the [CONOPT reference manual](https://conopt.gams.com/docs/latest/group__API__ADDITIONAL__INFORMATION.html#API_OPTIONS).
 
