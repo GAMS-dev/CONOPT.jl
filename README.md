@@ -163,7 +163,7 @@ List of supported model attributes:
  * [`MOI.ObjectiveSense`](@ref)
  * [`MOI.SolveTimeSec`](@ref)
  * [`MOI.BarrierIterations`](@ref)
-    - NOTE: CONOPT doesn't executes a GRG algorithm, instead of a barrier algorithm.
+    - NOTE: CONOPT executes a GRG algorithm, instead of a barrier algorithm.
       The iterations reported by this attribute are for the GRG algorithm.
 
 
