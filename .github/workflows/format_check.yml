@@ -20,7 +20,8 @@ jobs:
           using Pkg
           Pkg.add(PackageSpec(name="JuliaFormatter", version="2"))
           using JuliaFormatter
-          format("src/MOI_wrapper", verbose=true)
+          format("src")
+          format("ext/ConoptMathOptInterfaceExt", verbose=true)
           format("test", verbose=true)
           out = String(read(Cmd(`git diff`)))
           if isempty(out)
