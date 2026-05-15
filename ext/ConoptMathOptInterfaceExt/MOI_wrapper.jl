@@ -1036,17 +1036,12 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
     MOI.empty!(dest)
     index_map = MOI.Utilities.identity_index_map(src) # this just maps variable and constraint indices to themselves
 
-    show(src)
-    print(src)
-
     check_supported_attributes(dest, src)
 
     setup_model!(dest, src)
     setup_inner!(dest)
 
     start_time = time()
-
-    print_model_representation(dest.inner.jac_structure, dest.inner.model_data)
 
     CONOPT.solve!(dest.inner)
 
