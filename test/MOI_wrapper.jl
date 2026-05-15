@@ -1,17 +1,17 @@
 # ============================ /test/MOI_wrapper.jl ============================
 module TestConopt
 
-using Conopt
+using CONOPT
 using Test
 
 import MathOptInterface as MOI
 
 const OPTIMIZER = MOI.instantiate(
-    MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true)
+    MOI.OptimizerWithAttributes(CONOPT.Optimizer, MOI.Silent() => true)
 )
 
 const BRIDGED = MOI.instantiate(
-    MOI.OptimizerWithAttributes(Conopt.Optimizer, MOI.Silent() => true);
+    MOI.OptimizerWithAttributes(CONOPT.Optimizer, MOI.Silent() => true);
     with_bridge_type=Float64,
 )
 
@@ -90,12 +90,12 @@ You can also write new tests for solver-specific functionality. Write each new
 test as a function with a name beginning with `test_`.
 """
 function test_SolverName()
-    @test MOI.get(Conopt.Optimizer(), MOI.SolverName()) == "CONOPT"
+    @test MOI.get(CONOPT.Optimizer(), MOI.SolverName()) == "CONOPT"
     return nothing
 end
 
 function test_Name_and_Silent()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     # Test Name
     @test MOI.supports(model, MOI.Name())
@@ -116,7 +116,7 @@ function test_Name_and_Silent()
 end
 
 function test_TimeLimitSec()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     @test MOI.supports(model, MOI.TimeLimitSec())
     @test MOI.get(model, MOI.TimeLimitSec()) == nothing # Your default
@@ -133,7 +133,7 @@ function test_TimeLimitSec()
 end
 
 function test_NumberOfThreads()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     @test MOI.supports(model, MOI.NumberOfThreads())
     @test MOI.get(model, MOI.NumberOfThreads()) == 0 # Your default
@@ -150,7 +150,7 @@ function test_NumberOfThreads()
 end
 
 function test_RawOptimizerAttribute()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     @test MOI.supports(model, MOI.RawOptimizerAttribute("AnyString"))
 
@@ -179,7 +179,7 @@ function test_RawOptimizerAttribute()
 end
 
 function test_Unsupported_Limits()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     # Ensure CONOPT explicitly rejects attributes it doesn't support
     @test !MOI.supports(model, MOI.ObjectiveLimit())
@@ -191,7 +191,7 @@ function test_Unsupported_Limits()
 end
 
 function test_Status_Mappings()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     # Before solve
     @test MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMIZE_NOT_CALLED
@@ -202,45 +202,45 @@ function test_Status_Mappings()
     model.inner.solution_status.status_stored = true
 
     # Test: LOCALLY_SOLVED
-    model.inner.solution_status.solve_status = Conopt.SolveStatus_Normal_Completion
-    model.inner.solution_status.model_status = Conopt.ModelStatus_Locally_Optimal
+    model.inner.solution_status.solve_status = CONOPT.SolveStatus_Normal_Completion
+    model.inner.solution_status.model_status = CONOPT.ModelStatus_Locally_Optimal
     @test MOI.get(model, MOI.TerminationStatus()) == MOI.LOCALLY_SOLVED
     @test MOI.get(model, MOI.PrimalStatus()) == MOI.FEASIBLE_POINT
     @test MOI.get(model, MOI.DualStatus()) == MOI.FEASIBLE_POINT
 
     # Test: INFEASIBLE_OR_UNBOUNDED
-    model.inner.solution_status.model_status = Conopt.ModelStatus_Infeasible
+    model.inner.solution_status.model_status = CONOPT.ModelStatus_Infeasible
     @test MOI.get(model, MOI.TerminationStatus()) == MOI.INFEASIBLE_OR_UNBOUNDED
     @test MOI.get(model, MOI.PrimalStatus()) == MOI.INFEASIBLE_POINT
 
     # Test: TIME_LIMIT
-    model.inner.solution_status.solve_status = Conopt.SolveStatus_Timelimit
+    model.inner.solution_status.solve_status = CONOPT.SolveStatus_Timelimit
     # Model status shouldn't matter for termination if it hit a time limit in your current logic
     @test MOI.get(model, MOI.TerminationStatus()) == MOI.TIME_LIMIT
 
     # Test: ITERATION_LIMIT
-    model.inner.solution_status.solve_status = Conopt.SolveStatus_Iteration_Interrupt
+    model.inner.solution_status.solve_status = CONOPT.SolveStatus_Iteration_Interrupt
     @test MOI.get(model, MOI.TerminationStatus()) == MOI.ITERATION_LIMIT
     return nothing
 end
 
 function test_Objective_Sense_Mappings()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     MOI.set(model, MOI.ObjectiveSense(), MOI.MIN_SENSE)
-    @test model.inner.model_data.sense == Conopt.ObjSense_Minimize
+    @test model.inner.model_data.sense == CONOPT.ObjSense_Minimize
 
     MOI.set(model, MOI.ObjectiveSense(), MOI.MAX_SENSE)
-    @test model.inner.model_data.sense == Conopt.ObjSense_Maximize
+    @test model.inner.model_data.sense == CONOPT.ObjSense_Maximize
 
     MOI.set(model, MOI.ObjectiveSense(), MOI.FEASIBILITY_SENSE)
-    @test model.inner.model_data.sense == Conopt.ObjSense_Feasibility
+    @test model.inner.model_data.sense == CONOPT.ObjSense_Feasibility
     return nothing
 end
 
 
 function test_Option_Callback_Logic()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     # 1. Set different types of parameters
     MOI.set(model, MOI.RawOptimizerAttribute("Tol_Feas_Max"), 1e-7)  # Float
@@ -264,7 +264,7 @@ function test_Option_Callback_Logic()
     # We pass pointer_from_objref(model.inner) to simulate 'usrmem'
     ncall = 1
     while ncall < 5 # limit the loop so we don't accidentally get an infinite loop.
-        rc = Conopt._Option_cb(
+        rc = CONOPT._Option_cb(
             Int32(ncall),
             Base.unsafe_convert(Ptr{Cdouble}, rval_ref),
             Base.unsafe_convert(Ptr{Cint}, ival_ref),
@@ -295,7 +295,7 @@ function test_Option_Callback_Logic()
 end
 
 function test_Option_Persistence()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
     MOI.set(model, MOI.RawOptimizerAttribute("TestOption"), 123)
 
     # This should clear the variables/constraints but keep the dictionary
@@ -306,7 +306,7 @@ function test_Option_Persistence()
 end
 
 function test_VariablePrimalStart()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     # We need to mock a variable being added so the internal mappings exist
     # (Usually MOI.add_variable handles this, but since we are testing the getter/setter
@@ -329,7 +329,7 @@ function test_VariablePrimalStart()
 end
 
 function test_ResultCount_and_Bounds()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     # Before solve, ResultCount should be 0
     @test MOI.get(model, MOI.ResultCount()) == 0
@@ -351,7 +351,7 @@ function test_ResultCount_and_Bounds()
 end
 
 function test_IsValid()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     # Mock adding a variable and a constraint
     vi = MOI.VariableIndex(1)
@@ -374,7 +374,7 @@ function test_IsValid()
 end
 
 function test_SolverVersion()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     version_str = MOI.get(model, MOI.SolverVersion())
 
@@ -387,7 +387,7 @@ function test_SolverVersion()
 end
 
 function test_License_Attributes()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     # 1. Test setting the attributes via MOI
     MOI.set(model, MOI.RawOptimizerAttribute("license_int_1"), 123)
@@ -401,7 +401,7 @@ function test_License_Attributes()
     @test model.license_int_3 == 789
     @test model.license_string == "my_test_license"
 
-    ext = Base.get_extension(Conopt, :ConoptMathOptInterfaceExt)
+    ext = Base.get_extension(CONOPT, :ConoptMathOptInterfaceExt)
 
     # 3. Simulate the start of an optimize! call which triggers _setup_options!
     ext._setup_options!(model)
@@ -416,7 +416,7 @@ function test_License_Attributes()
 end
 
 function test_License_Environment_Fallback()
-    model = Conopt.Optimizer()
+    model = CONOPT.Optimizer()
 
     # Clear any MOI attributes so it is forced to fall back
     model.license_int_1 = nothing
@@ -424,7 +424,7 @@ function test_License_Environment_Fallback()
     model.license_int_3 = nothing
     model.license_string = nothing
 
-    ext = Base.get_extension(Conopt, :ConoptMathOptInterfaceExt)
+    ext = Base.get_extension(CONOPT, :ConoptMathOptInterfaceExt)
     ext._setup_options!(model)
 
     # Set dummy environment variables

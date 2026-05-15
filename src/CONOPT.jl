@@ -1,4 +1,4 @@
-module Conopt
+module CONOPT
 
 using Preferences
 
@@ -46,7 +46,7 @@ function __init__()
             @warn """
             CONOPT library not found!
             Please set the path to the CONOPT shared library using:
-            `Conopt.set_library_path("/path/to/libconopt.so")`
+            `CONOPT.set_library_path("/path/to/libconopt.so")`
             and then restart Julia.
             """
         end

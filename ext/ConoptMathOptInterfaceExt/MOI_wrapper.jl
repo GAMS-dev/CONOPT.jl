@@ -5,7 +5,7 @@
 const CONOPT_INF_DEFAULT = 1e15
 
 mutable struct Optimizer <: MOI.AbstractOptimizer
-    inner::Conopt.ConoptModel
+    inner::CONOPT.ConoptModel
     name::String                # name of the model
 
     # parameters
@@ -27,11 +27,11 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     nlp_model::Union{Nothing, MOI.Nonlinear.Model} # specialised NLP model structure
     ad_backend::MOI.Nonlinear.AbstractAutomaticDifferentiation # automatic differentiation backend
 
-    # variable mapping MOI to Conopt
+    # variable mapping MOI to CONOPT
     variable_indices::Vector{MOI.VariableIndex} # list of variable indices
     var_index_to_pos::Array{Int, 1}
 
-    # constraint mapping MOI to Conopt
+    # constraint mapping MOI to CONOPT
     con_index_to_pos::Dict{MOI.ConstraintIndex, Int}
     nlcon_index_to_pos::Dict{MOI.Nonlinear.ConstraintIndex, Int}
 
@@ -40,7 +40,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     # constructor
     function Optimizer()
         model = new(
-            Conopt.ConoptModel(),
+            CONOPT.ConoptModel(),
             "Model",                # model name
             nothing,                # time limit
             2,                      # the default log level
@@ -167,12 +167,12 @@ function Base.summary(io::IO, model::Optimizer)
 end
 
 function MOI.is_empty(model::Optimizer)
-    return Conopt.is_empty(model.inner)
+    return CONOPT.is_empty(model.inner)
 end
 
 function MOI.empty!(model::Optimizer)
-    # destroying the existing Conopt model, which will call free on the control vector
-    model.inner = Conopt.ConoptModel()
+    # destroying the existing CONOPT model, which will call free on the control vector
+    model.inner = CONOPT.ConoptModel()
 
     model.nlp_model = MOI.Nonlinear.Model()
     if !isnothing(model.inner.user_data)
@@ -200,7 +200,7 @@ function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
     major = Ref{Cint}(0)
     minor = Ref{Cint}(0)
     patch = Ref{Cint}(0)
-    Conopt.LibConopt.COIGET_Version(major, minor, patch)
+    CONOPT.LibConopt.COIGET_Version(major, minor, patch)
     return string(major[], ".", minor[], ".", patch[])
 end
 
@@ -401,7 +401,7 @@ MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
 
 
 """
-    function _eval_f_ini(model::Conopt.ConoptModel, x::Vector{Float64}, rowlist::Vector{Cint}, mode::Cint)
+    function _eval_f_ini(model::CONOPT.ConoptModel, x::Vector{Float64}, rowlist::Vector{Cint}, mode::Cint)
 
     callback function that is executed immediately prior to the function and derivative evaluations.
     This method is used to execute the MOI evaluators for the function and derivatives. The results
@@ -410,7 +410,7 @@ MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
     CONOPT only needs these row-by-row.
 """
 function _eval_f_ini(
-    model::Conopt.ConoptModel, x::Vector{Float64}, ::Vector{Cint}, mode::Cint
+    model::CONOPT.ConoptModel, x::Vector{Float64}, ::Vector{Cint}, mode::Cint
 )::Cint
     eval_cache = model.user_data::EvaluationCache
 
@@ -436,11 +436,11 @@ end
 
 
 """
-    function _eval_f(model::Conopt.ConoptModel, rownum::Cint)
+    function _eval_f(model::CONOPT.ConoptModel, rownum::Cint)
 
     callback function for returning the cached values for a row's function evaluation.
 """
-function _eval_f(model::Conopt.ConoptModel, rownum::Cint)
+function _eval_f(model::CONOPT.ConoptModel, rownum::Cint)
     eval_cache = model.user_data::EvaluationCache
 
     return eval_cache.cached_g[rownum + 1]
@@ -448,12 +448,12 @@ end
 
 
 """
-    function _eval_jac(model::Conopt.ConoptModel, rownum::Cint, jac_idx::Vector{Cint}, jac_vals::Vector{Float64})
+    function _eval_jac(model::CONOPT.ConoptModel, rownum::Cint, jac_idx::Vector{Cint}, jac_vals::Vector{Float64})
 
     callback function for returning the cached values for a row's derivative evaluation.
 """
 function _eval_jac(
-    model::Conopt.ConoptModel,
+    model::CONOPT.ConoptModel,
     rownum::Cint,
     jac_idx::Vector{Cint},
     jac_vals::Vector{Float64},
@@ -470,7 +470,7 @@ end
 
 
 """
-    function _eval_hess(model::Conopt.ConoptModel, x::Vector{Float64}, u::Vector{Float64}, rowno::Vector{Cint},
+    function _eval_hess(model::CONOPT.ConoptModel, x::Vector{Float64}, u::Vector{Float64}, rowno::Vector{Cint},
         colno::Vector{Cint}, value::Vector{Float64})
 
     callback function for returning the Hessian of the Lagrangian. The EvaluationCache is used here
@@ -478,7 +478,7 @@ end
     MOI and CONOPT for the Hessian is stored in the EvaluationCache.
 """
 function _eval_hess(
-    model::Conopt.ConoptModel,
+    model::CONOPT.ConoptModel,
     x::Vector{Float64},
     u::Vector{Float64},
     ::Vector{Cint},
@@ -534,7 +534,7 @@ MOI.supports_incremental_interface(::Optimizer) = false
     function _setup_options(dest::Optimizer)
 
     copies the parameters from the Optimizer struct to the ConoptModel struct. This is needed
-    because only the ConoptModel is passed as the user data to Conopt. Further, when calling
+    because only the ConoptModel is passed as the user data to CONOPT. Further, when calling
     optimize!, the options stored in ConoptModel are removed. Having this copy allows options
     to be set prior to the optimize! call.
 """
@@ -561,7 +561,7 @@ end
     updates the variable bounds and also updates the primal start to fit between the bounds
 """
 function _update_variable_bounds!(
-    model_data::Conopt.ModelData, var_index::Int; lower::Float64=(-Inf), upper::Float64=Inf
+    model_data::CONOPT.ModelData, var_index::Int; lower::Float64=(-Inf), upper::Float64=Inf
 )
     if lower > -Inf
         model_data.variable_lower[var_index] = lower
@@ -583,7 +583,7 @@ end
     function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
 
     extracts the variable information from the JuMP model and stores this in a local data structure.
-    This data is passed to Conopt through the user memory pointer. The variable information is
+    This data is passed to CONOPT through the user memory pointer. The variable information is
     processed in the ReadMatrix callback.
 """
 function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
@@ -620,15 +620,15 @@ end
 """
     function _set_objective_sense!(model::Optimizer, sense::MOI.OptimizationSense)
 
-    converts the objective sense from MOI to Conopt
+    converts the objective sense from MOI to CONOPT
 """
 function _set_objective_sense!(model::Optimizer, sense::MOI.OptimizationSense)
     if sense == MOI.MIN_SENSE
-        model.inner.model_data.sense = Conopt.ObjSense_Minimize
+        model.inner.model_data.sense = CONOPT.ObjSense_Minimize
     elseif sense == MOI.MAX_SENSE
-        model.inner.model_data.sense = Conopt.ObjSense_Maximize
+        model.inner.model_data.sense = CONOPT.ObjSense_Maximize
     elseif sense == MOI.FEASIBILITY_SENSE
-        model.inner.model_data.sense = Conopt.ObjSense_Feasibility
+        model.inner.model_data.sense = CONOPT.ObjSense_Feasibility
     else
         error("Unknown objective sense: $sense")
     end
@@ -639,7 +639,7 @@ end
     function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
 
     extracts the constraint data from the JuMP model and stores this in a local data structure.
-    The data structure is passed as the user memory in Conopt, and is read in the ReadMatrix method.
+    The data structure is passed as the user memory in CONOPT, and is read in the ReadMatrix method.
 """
 function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
     dest.inner.model_data.num_constraints = 0
@@ -739,7 +739,7 @@ function _setup_constraints!(dest::Optimizer, src::MOI.ModelLike)
         push!(dest.inner.model_data.constraint_type, 3) # CONOPT's free row flag
     end
 
-    # setting the objective sense in the Conopt model data
+    # setting the objective sense in the CONOPT model data
     return _set_objective_sense!(dest, MOI.get(src, MOI.ObjectiveSense()))
 end
 
@@ -762,7 +762,7 @@ end
 """
     function _setup_matrices!(dest::Optimizer)
 
-    setup up the jacobian and hessian matrices in a form that can be supplied to Conopt. This process
+    setup up the jacobian and hessian matrices in a form that can be supplied to CONOPT. This process
     additionally involves defining mappings between the jacobian and hessian structures in the evaluator
     to support the function and derivative evaluations.
 
@@ -1018,7 +1018,7 @@ end
 function setup_inner!(model::Optimizer)
     # TODO check if we need to recreate everything
 
-    return Conopt.initialize!(model.inner)
+    return CONOPT.initialize!(model.inner)
 end
 
 
@@ -1048,7 +1048,7 @@ function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
 
     print_model_representation(dest.inner.jac_structure, dest.inner.model_data)
 
-    Conopt.solve!(dest.inner)
+    CONOPT.solve!(dest.inner)
 
     dest.solve_time = time() - start_time
 
@@ -1064,7 +1064,7 @@ end
 
 # An iterate available if the model has been setup
 function MOI.get(model::Optimizer, ::MOI.ResultCount)
-    if Conopt.is_empty(model.inner)
+    if CONOPT.is_empty(model.inner)
         return 0
     end
 
@@ -1081,39 +1081,39 @@ function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
 
     model_status = model.inner.solution_status.model_status
     solve_status = model.inner.solution_status.solve_status
-    if solve_status == Conopt.SolveStatus_Normal_Completion
-        if model_status == Conopt.ModelStatus_Optimal
+    if solve_status == CONOPT.SolveStatus_Normal_Completion
+        if model_status == CONOPT.ModelStatus_Optimal
             #return MOI.OPTIMAL # we don't return OPTIMAL because CONOPT is considered a local solver
             return MOI.LOCALLY_SOLVED
-        elseif model_status == Conopt.ModelStatus_Locally_Optimal
+        elseif model_status == CONOPT.ModelStatus_Locally_Optimal
             return MOI.LOCALLY_SOLVED
-        elseif model_status == Conopt.ModelStatus_Unbounded
+        elseif model_status == CONOPT.ModelStatus_Unbounded
             return MOI.DUAL_INFEASIBLE
-        elseif model_status == Conopt.ModelStatus_Infeasible
+        elseif model_status == CONOPT.ModelStatus_Infeasible
             return MOI.INFEASIBLE_OR_UNBOUNDED
-        elseif model_status == Conopt.ModelStatus_Locally_Infeasible
+        elseif model_status == CONOPT.ModelStatus_Locally_Infeasible
             return MOI.LOCALLY_INFEASIBLE
             # TODO: there are more model statuses. Need to see if they are needed.
         end
-    elseif solve_status == Conopt.SolveStatus_Iteration_Interrupt
+    elseif solve_status == CONOPT.SolveStatus_Iteration_Interrupt
         return MOI.ITERATION_LIMIT
-    elseif solve_status == Conopt.SolveStatus_Timelimit
+    elseif solve_status == CONOPT.SolveStatus_Timelimit
         return MOI.TIME_LIMIT
-    elseif solve_status == Conopt.SolveStatus_Terminated_Solver
+    elseif solve_status == CONOPT.SolveStatus_Terminated_Solver
         return MOI.OTHER_LIMIT
-    elseif solve_status == Conopt.SolveStatus_Evaluation_Error_Limit
+    elseif solve_status == CONOPT.SolveStatus_Evaluation_Error_Limit
         return MOI.OTHER_LIMIT
-    elseif solve_status == Conopt.SolveStatus_User_Interrupt
+    elseif solve_status == CONOPT.SolveStatus_User_Interrupt
         return MOI.INTERRUPTED
-    elseif solve_status == Conopt.SolveStatus_Error_Setup
+    elseif solve_status == CONOPT.SolveStatus_Error_Setup
         return MOI.OTHER_ERROR
-    elseif solve_status == Conopt.SolveStatus_Solver_Error_NoPoint
+    elseif solve_status == CONOPT.SolveStatus_Solver_Error_NoPoint
         return MOI.OTHER_ERROR
-    elseif solve_status == Conopt.SolveStatus_Solver_Error_Point
+    elseif solve_status == CONOPT.SolveStatus_Solver_Error_Point
         return MOI.OTHER_ERROR
-    elseif solve_status == Conopt.SolveStatus_General_System_Error
+    elseif solve_status == CONOPT.SolveStatus_General_System_Error
         return MOI.OTHER_ERROR
-    elseif solve_status == Conopt.SolveStatus_Terminated_Quick_Mode
+    elseif solve_status == CONOPT.SolveStatus_Terminated_Quick_Mode
         return MOI.OTHER_LIMIT
     end
     return MOI.OPTIMIZE_NOT_CALLED
@@ -1127,19 +1127,19 @@ MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solve_time
 
 # the primal status - the status of the primal solution
 function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
-    if Conopt.is_empty(model.inner)
+    if CONOPT.is_empty(model.inner)
         return MOI.NO_SOLUTION
     end
 
     MOI.check_result_index_bounds(model, attr)
 
     model_status = model.inner.solution_status.model_status
-    if model_status == Conopt.ModelStatus_Optimal ||
-        model_status == Conopt.ModelStatus_Locally_Optimal
+    if model_status == CONOPT.ModelStatus_Optimal ||
+        model_status == CONOPT.ModelStatus_Locally_Optimal
         return MOI.FEASIBLE_POINT
-    elseif model_status == Conopt.ModelStatus_Infeasible ||
-        model_status == Conopt.ModelStatus_Locally_Infeasible ||
-        model_status == Conopt.ModelStatus_Intermediate_Infeasible
+    elseif model_status == CONOPT.ModelStatus_Infeasible ||
+        model_status == CONOPT.ModelStatus_Locally_Infeasible ||
+        model_status == CONOPT.ModelStatus_Intermediate_Infeasible
         return MOI.INFEASIBLE_POINT
     end
 
@@ -1151,17 +1151,17 @@ end
 # NOTE: this is currently being taken from the model status. However, we could infer this result
 # from the dual solution.
 function MOI.get(model::Optimizer, attr::MOI.DualStatus)
-    if Conopt.is_empty(model.inner)
+    if CONOPT.is_empty(model.inner)
         return MOI.NO_SOLUTION
     end
 
     MOI.check_result_index_bounds(model, attr)
 
     model_status = model.inner.solution_status.model_status
-    if model_status == Conopt.ModelStatus_Optimal ||
-        model_status == Conopt.ModelStatus_Locally_Optimal
+    if model_status == CONOPT.ModelStatus_Optimal ||
+        model_status == CONOPT.ModelStatus_Locally_Optimal
         return MOI.FEASIBLE_POINT
-    elseif model_status == Conopt.ModelStatus_Unbounded
+    elseif model_status == CONOPT.ModelStatus_Unbounded
         return MOI.NO_SOLUTION
     end
 
@@ -1170,7 +1170,7 @@ end
 
 
 # the number of barrier iterations
-# NOTE: Conopt does not perform the Barrier algorithm, so this is the iterations for the GRG algorithm.
+# NOTE: CONOPT does not perform the Barrier algorithm, so this is the iterations for the GRG algorithm.
 MOI.get(model::Optimizer, ::MOI.BarrierIterations) = model.inner.solution_status.iterations
 
 
@@ -1219,7 +1219,7 @@ end
 
 # the constraint dual solutions
 function _dual_multiplier(model::Optimizer)
-    return model.inner.model_data.sense == Conopt.ObjSense_Minimize ? 1.0 : -1.0
+    return model.inner.model_data.sense == CONOPT.ObjSense_Minimize ? 1.0 : -1.0
 end
 
 function MOI.get(
