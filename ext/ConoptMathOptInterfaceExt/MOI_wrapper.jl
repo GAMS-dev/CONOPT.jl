@@ -1087,8 +1087,8 @@ function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
         elseif model_status == CONOPT.ModelStatus_Infeasible
             #return MOI.INFEASIBLE_OR_UNBOUNDED # we don't return INFEASIBLE_OR_UNBOUNDED because
                                                 # CONOPT is a local solver.
-        elseif model_status == CONOPT.ModelStatus_Locally_Infeasible
             return MOI.LOCALLY_INFEASIBLE
+        elseif model_status == CONOPT.ModelStatus_Locally_Infeasible
             return MOI.LOCALLY_INFEASIBLE
             # TODO: there are more model statuses. Need to see if they are needed.
         end
