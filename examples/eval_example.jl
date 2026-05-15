@@ -1,5 +1,5 @@
 using JuMP
-import Conopt
+import CONOPT
 import MathOptInterface as MOI
 
 # This example solves a simple nonlinear problem
@@ -10,7 +10,7 @@ import MathOptInterface as MOI
 #      x >= 0
 #      y >= 0
 
-model = Model(Conopt.Optimizer)
+model = Model(CONOPT.Optimizer)
 
 @variable(model, x >= 0)
 @variable(model, y >= 0)
