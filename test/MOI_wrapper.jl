@@ -31,7 +31,7 @@ implemented or that your solver doesn't support.
 """
 function test_runtests()
     model = MOI.instantiate(
-        Conopt.Optimizer;
+        CONOPT.Optimizer;
         with_bridge_type=Float64,
         with_cache_type=Float64,
     )
