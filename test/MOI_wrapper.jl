@@ -31,9 +31,7 @@ implemented or that your solver doesn't support.
 """
 function test_runtests()
     model = MOI.instantiate(
-        CONOPT.Optimizer;
-        with_bridge_type=Float64,
-        with_cache_type=Float64,
+        CONOPT.Optimizer; with_bridge_type=Float64, with_cache_type=Float64
     )
     MOI.set(model, MOI.Silent(), true)
     config = MOI.Test.Config(;
@@ -52,15 +50,12 @@ function test_runtests()
         ],
     )
     MOI.Test.runtests(
-        model,
-        config;
-        exclude=[
+        model, config; exclude=[
             # CONOPT is a local solver
             r"^test_nonlinear_hs071_global$",
-        ],
-        verbose=true,
+        ], verbose=true
     )
-    return
+    return nothing
 end
 
 """

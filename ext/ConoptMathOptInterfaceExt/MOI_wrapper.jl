@@ -9,7 +9,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     name::String                # name of the model
 
     # parameters
-    time_limit::Union{Real,Nothing}    # time limit in seconds
+    time_limit::Union{Real, Nothing}    # time limit in seconds
     log_level::Int              # the log level
     threads::Int                # number of threads (0 is default, tells CONOPT to use the maximum number of threads)
     silent::Bool                # should the output be disabled
@@ -119,11 +119,7 @@ end
 ### Some defines used for specifying the supported constraints
 ###
 
-const _SETS = Union{
-    MOI.GreaterThan{Float64},
-    MOI.LessThan{Float64},
-    MOI.EqualTo{Float64},
-}
+const _SETS = Union{MOI.GreaterThan{Float64}, MOI.LessThan{Float64}, MOI.EqualTo{Float64}}
 
 const _FUNCTIONS = Union{
     MOI.VariableIndex,
@@ -602,7 +598,7 @@ function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
     dest.var_index_to_pos = zeros(Int, max_index)
 
     dest.inner.model_data.variable_primal_start = zeros(Float64, n_vars)
-    dest.inner.model_data.variable_lower = fill(-dest.lim_variable, n_vars) #= ah, that's probably where you would need lim_variable, because if the user chooses a different value for CONOPT, this would not be correct =#
+    dest.inner.model_data.variable_lower = fill(-dest.lim_variable, n_vars)
     dest.inner.model_data.variable_upper = fill(dest.lim_variable, n_vars)
 
     for (i, v) in enumerate(dest.variable_indices)
@@ -1087,7 +1083,7 @@ function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
             return MOI.DUAL_INFEASIBLE
         elseif model_status == CONOPT.ModelStatus_Infeasible
             #return MOI.INFEASIBLE_OR_UNBOUNDED # we don't return INFEASIBLE_OR_UNBOUNDED because
-                                                # CONOPT is a local solver.
+            # CONOPT is a local solver.
             return MOI.LOCALLY_INFEASIBLE
         elseif model_status == CONOPT.ModelStatus_Locally_Infeasible
             return MOI.LOCALLY_INFEASIBLE

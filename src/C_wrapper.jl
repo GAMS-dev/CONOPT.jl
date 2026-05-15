@@ -192,7 +192,7 @@ mutable struct ConoptModel
     cntvect::Ref{Ptr{Cvoid}}    # pointer to the CONOPT control vector
     silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
     log_level::Int              # the log level for the CONOPT output. This matches the C++ verbosity levels
-    time_limit::Union{Float64,Nothing}  # the solver time limit
+    time_limit::Union{Float64, Nothing}  # the solver time limit
     threads::Int                # the number of threads to use
     options::Dict{String, Any}    # solver options
     option_offset::Int           # offset for invalid options

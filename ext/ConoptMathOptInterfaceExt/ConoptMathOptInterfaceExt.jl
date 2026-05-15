@@ -35,8 +35,7 @@ PrecompileTools.@setup_workload begin
     # Add a nonlinear objective
     MOI.set(src, MOI.ObjectiveSense(), MOI.MAX_SENSE)
     f_nl = MOI.ScalarNonlinearFunction(
-        :+,
-        Any[MOI.ScalarNonlinearFunction(:sin, Any[x[i]]) for i in 1:3],
+        :+, Any[MOI.ScalarNonlinearFunction(:sin, Any[x[i]]) for i in 1:3]
     )
     MOI.set(src, MOI.ObjectiveFunction{typeof(f_nl)}(), f_nl)
 
