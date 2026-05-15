@@ -114,6 +114,7 @@ function empty_cache!(cache)
     return cache
 end
 
+
 ###
 ### Some defines used for specifying the supported constraints
 ###
@@ -187,7 +188,6 @@ function MOI.empty!(model::Optimizer)
 end
 
 
-
 ###
 ### get, set and supports functions for various Optimizer attributes
 ###
@@ -203,6 +203,7 @@ function MOI.get(::Optimizer, ::MOI.SolverVersion)::String
     CONOPT.LibConopt.COIGET_Version(major, minor, patch)
     return string(major[], ".", minor[], ".", patch[])
 end
+
 
 # raw solver
 MOI.get(model::Optimizer, ::MOI.RawSolver) = model.inner.cntvect
@@ -357,6 +358,7 @@ function MOI.supports_constraint(
     return true
 end
 
+
 ###
 ### indicate the types of objectives that CONOPT supports
 ###
@@ -380,6 +382,7 @@ function MOI.set(model::Optimizer, ::MOI.ObjectiveSense, sense::MOI.Optimization
     _set_objective_sense!(model, sense)
     return nothing
 end
+
 
 ###
 ### _EmptyNLPEvaluator
@@ -555,6 +558,7 @@ function _setup_options!(dest::Optimizer)
     return dest.inner.license.license_string = dest.license_string
 end
 
+
 """
     function _update_variable_bounds!(model_data::ModelData, var_index::Int; lower::Float64 = -Inf, upper::Float64 = Inf)
 
@@ -614,7 +618,6 @@ function _setup_variables!(dest::Optimizer, src::MOI.ModelLike)
 
     return nothing
 end
-
 
 
 """
@@ -1008,7 +1011,6 @@ function setup_model!(dest::Optimizer, src::MOI.ModelLike)
 end
 
 
-
 """
     function setup_inner!(model::Optimizer)
 
@@ -1025,7 +1027,6 @@ end
 ###
 ### Optimize
 ###
-
 
 """
     function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
@@ -1116,11 +1117,14 @@ function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
     return MOI.OPTIMIZE_NOT_CALLED
 end
 
+
 # raw status string explaining why the solver stopped
 MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.inner.solution_status.raw_status
 
+
 # solving time in seconds
 MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solve_time
+
 
 # the primal status - the status of the primal solution
 function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
@@ -1297,7 +1301,6 @@ end
 ###
 ### Utilities
 ###
-
 
 """
     function print_model_representation(jac, data)
