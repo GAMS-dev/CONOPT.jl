@@ -1090,8 +1090,10 @@ function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
         elseif model_status == CONOPT.ModelStatus_Unbounded
             return MOI.DUAL_INFEASIBLE
         elseif model_status == CONOPT.ModelStatus_Infeasible
-            return MOI.INFEASIBLE_OR_UNBOUNDED
+            #return MOI.INFEASIBLE_OR_UNBOUNDED # we don't return INFEASIBLE_OR_UNBOUNDED because
+                                                # CONOPT is a local solver.
         elseif model_status == CONOPT.ModelStatus_Locally_Infeasible
+            return MOI.LOCALLY_INFEASIBLE
             return MOI.LOCALLY_INFEASIBLE
             # TODO: there are more model statuses. Need to see if they are needed.
         end
@@ -1120,7 +1122,7 @@ function MOI.get(model::Optimizer, ::MOI.TerminationStatus)
 end
 
 # raw status string explaining why the solver stopped
-MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.inner.raw_status
+MOI.get(model::Optimizer, ::MOI.RawStatusString) = model.inner.solution_status.raw_status
 
 # solving time in seconds
 MOI.get(model::Optimizer, ::MOI.SolveTimeSec) = model.solve_time
@@ -1131,7 +1133,9 @@ function MOI.get(model::Optimizer, attr::MOI.PrimalStatus)
         return MOI.NO_SOLUTION
     end
 
-    MOI.check_result_index_bounds(model, attr)
+    if !(1 <= attr.result_index <= MOI.get(model, MOI.ResultCount()))
+        return MOI.NO_SOLUTION
+    end
 
     model_status = model.inner.solution_status.model_status
     if model_status == CONOPT.ModelStatus_Optimal ||

@@ -48,6 +48,7 @@ function test_runtests()
             MOI.ConstraintDual,
             MOI.ConstraintBasisStatus,
             MOI.DualObjectiveValue,
+            MOI.ObjectiveBound,
         ],
     )
     MOI.Test.runtests(
@@ -189,7 +190,7 @@ function test_Status_Mappings()
 
     # Test: INFEASIBLE_OR_UNBOUNDED
     model.inner.solution_status.model_status = CONOPT.ModelStatus_Infeasible
-    @test MOI.get(model, MOI.TerminationStatus()) == MOI.INFEASIBLE_OR_UNBOUNDED
+    @test MOI.get(model, MOI.TerminationStatus()) == MOI.LOCALLY_INFEASIBLE
     @test MOI.get(model, MOI.PrimalStatus()) == MOI.INFEASIBLE_POINT
 
     # Test: TIME_LIMIT
