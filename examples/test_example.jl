@@ -1,7 +1,7 @@
 using JuMP
-using Conopt
+using CONOPT
 
-model = Model(Conopt.Optimizer)
+model = Model(CONOPT.Optimizer)
 
 @variable(model, v1 >= 0)
 @variable(model, v2 >= 0)

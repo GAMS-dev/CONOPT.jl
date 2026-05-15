@@ -1,8 +1,8 @@
 using JuMP
-import Conopt
+import CONOPT
 import MathOptInterface as MOI
 
-model = Model(Conopt.Optimizer)
+model = Model(CONOPT.Optimizer)
 
 @variable(model, x >= 0)
 @variable(model, y >= 0)
