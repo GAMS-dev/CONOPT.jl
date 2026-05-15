@@ -1,0 +1,96 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['1.10', '1']
+        os: [ubuntu-latest, macOS-latest, windows-latest]
+        arch: [x64]
+        include:
+          # Test Julia v1.9 (Linux)
+          - version: '1.9'
+            os: ubuntu-latest
+            arch: x64
+          # Test Linux ARM
+          - version: '1'
+            os: ubuntu-24.04-arm
+            arch: arm64
+          # Test macOS Apple Silicon (M-series)
+          - version: '1'
+            os: macos-14
+            arch: aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+          arch: ${{ matrix.arch }}
+      - uses: julia-actions/cache@v1
+
+      # download CONOPT binaries based on OS and architecture
+
+      # LINUX (x64)
+      - name: Download CONOPT Linux x64
+        if: runner.os == 'Linux' && matrix.arch == 'x64'
+        run: |
+          wget https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.0/conopt-4_39_0-linux-x86_64.zip
+          unzip conopt-4_39_0-linux-x86_64.zip
+          echo "CONOPT_LIB=$PWD/conopt-linux-x86_64/lib/libconopt.so.4" >> $GITHUB_ENV
+
+      # LINUX (ARM)
+      - name: Download CONOPT Linux ARM64
+        if: runner.os == 'Linux' && matrix.arch == 'arm64'
+        run: |
+          wget https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.0/conopt-4_39_0-linux-arm64.zip
+          unzip conopt-4_39_0-linux-arm64.zip
+          echo "CONOPT_LIB=$PWD/conopt-linux-arm64/lib/libconopt.so.4" >> $GITHUB_ENV
+
+      # macOS (Intel / x64)
+      - name: Download CONOPT macOS x64
+        if: runner.os == 'macOS' && matrix.arch == 'x64'
+        run: |
+          curl -L -o conopt.zip https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.0/conopt-4_39_0-macos-x86_64.zip
+          unzip conopt.zip
+          # Update this filename if macOS uses a different naming scheme like libconopt.4.dylib
+          echo "CONOPT_LIB=$PWD/conopt-macos-x86_64/lib/libconopt.dylib" >> $GITHUB_ENV
+
+      # macOS (Apple Silicon / ARM)
+      - name: Download CONOPT macOS ARM64
+        if: runner.os == 'macOS' && matrix.arch == 'aarch64'
+        run: |
+          curl -L -o conopt.zip https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.0/conopt-4_39_0-macos-arm64.zip
+          unzip conopt.zip
+          echo "CONOPT_LIB=$PWD/conopt-macos-arm64/lib/libconopt.dylib" >> $GITHUB_ENV
+
+      # WINDOWS (x64)
+      - name: Download CONOPT Windows x64
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.0/conopt-4_39_0-win-x86_64.zip" -OutFile "conopt.zip"
+          Expand-Archive -Path "conopt.zip" -DestinationPath "."
+          # Update conopt4.dll to the exact name extracted from the zip if different
+          echo "CONOPT_LIB=$PWD\conopt-win-x86_64\lib\conopt4.dll" >> $env:GITHUB_ENV
+
+      # build and test package
+      - uses: julia-actions/julia-buildpkg@v1
+
+      - uses: julia-actions/julia-runtest@v1
+
+      - uses: julia-actions/julia-processcoverage@v1
+      - uses: codecov/codecov-action@v4
+        with:
+          file: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
