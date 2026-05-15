@@ -2,7 +2,7 @@ module CONOPT
 
 using Preferences
 
-const libconopt = @load_preference("libconopt_path", "conopt")
+const libconopt = @load_preference("libconopt_path", get(ENV, "CONOPT_LIB", "conopt"))
 
 """
     set_library_path(path::String)
