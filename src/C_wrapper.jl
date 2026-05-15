@@ -59,7 +59,7 @@ mutable struct ModelData
     objective_row_index::Int    # the index for the objective row. TODO: handle the case when the objective is a variable.
     sense::ObjectiveSense       # the objective sense, 1 is minimize and -
 
-    keep::Bool                  # should the data be kept after being read by Conopt
+    keep::Bool                  # should the data be kept after being read by CONOPT
 
     function ModelData()
         return new(
@@ -83,7 +83,7 @@ mutable struct JacobianStructure
     values::Vector{Float64} # the values for the Jacobian matrix
     nlflag::Vector{Cint}    # the nonlinear flags for the Jacobian matrix
 
-    keep::Bool              # should the data be kept after being read by Conopt
+    keep::Bool              # should the data be kept after being read by CONOPT
 
     function JacobianStructure()
         return new(Cint[], Cint[], Float64[], Cint[], false)
@@ -94,7 +94,7 @@ mutable struct HessianStructure
     cols::Vector{Cint}  # the column indices for the Hessian
     rows::Vector{Cint}  # the row indices for the Hessian
 
-    keep::Bool          # should the data be kept after being read by Conopt
+    keep::Bool          # should the data be kept after being read by CONOPT
 
     function HessianStructure()
         return new(Cint[], Cint[], false)
@@ -114,8 +114,8 @@ mutable struct SolutionStatus
     y_status::Vector{Int}           # the status of the constraints
 
     raw_status::String               # string explaining why the solver stopped
-    model_status::ModelStatus       # the model status reported by Conopt
-    solve_status::SolveStatus       # the solution status reported by Conopt
+    model_status::ModelStatus       # the model status reported by CONOPT
+    solve_status::SolveStatus       # the solution status reported by CONOPT
     iterations::Int                 # the number of iterations performed
     objective::Float64              # the final objective value
 
@@ -191,13 +191,13 @@ end
 mutable struct ConoptModel
     cntvect::Ref{Ptr{Cvoid}}    # pointer to the CONOPT control vector
     silent::Bool                # whether CONOPT output should be suppressed: affects the output callbacks of CONOPT
-    log_level::Int              # the log level for the Conopt output. This matches the C++ verbosity levels
+    log_level::Int              # the log level for the CONOPT output. This matches the C++ verbosity levels
     time_limit::Union{Float64,Nothing}  # the solver time limit
     threads::Int                # the number of threads to use
     options::Dict{String, Any}    # solver options
     option_offset::Int           # offset for invalid options
 
-    license::ConoptLicense      # storing the details of the Conopt license
+    license::ConoptLicense      # storing the details of the CONOPT license
 
     # problem Structures
     model_data::ModelData       # a cache of the model data
@@ -215,7 +215,7 @@ mutable struct ConoptModel
         cntvect = Ref{Ptr{Cvoid}}()
         coierror = LibConopt.COI_Create(cntvect)
         if coierror != 0
-            error("could not create a Conopt control vector.")
+            error("could not create a CONOPT control vector.")
         end
 
         model = new(
@@ -436,7 +436,7 @@ end
 """
     function _ErrMsg_cb(rowno, colno, posno, msgptr, usrmem)
 
-    callback for handling the error messages from Conopt. These messages report the row, column and
+    callback for handling the error messages from CONOPT. These messages report the row, column and
     position numbers for the error along with a message.
 """
 function _ErrMsg_cb(rowno, colno, posno, msgptr, usrmem)::Cint

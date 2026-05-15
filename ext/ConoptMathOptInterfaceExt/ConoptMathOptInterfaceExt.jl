@@ -5,12 +5,12 @@
 
 module ConoptMathOptInterfaceExt
 
-import Conopt
+import CONOPT
 import MathOptInterface as MOI
 import PrecompileTools
 
 function __init__()
-    setglobal!(Conopt, :Optimizer, Optimizer)
+    setglobal!(CONOPT, :Optimizer, Optimizer)
     return nothing
 end
 
