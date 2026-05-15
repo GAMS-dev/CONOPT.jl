@@ -1,8 +1,8 @@
 using JuMP
-using Conopt
+using CONOPT
 
 # Initialize the model
-model = Model(Conopt.Optimizer)
+model = Model(CONOPT.Optimizer)
 
 # 1. Variables (2 original, 2 new)
 @variable(model, x >= 1) #
@@ -18,7 +18,7 @@ model = Model(Conopt.Optimizer)
 # 3. Objective Function (Incorporating the new variables)
 @objective(model, Min, x + 2*y + 3*z + w + 2) #
 
-# 4. Hand off to Conopt.jl!
+# 4. Hand off to CONOPT.jl!
 optimize!(model) #
 
 # ==========================================
