@@ -15,10 +15,10 @@ jobs:
           version: '1'
       - uses: actions/checkout@v4
       - name: Format check
-        shell: julia --color=yes {0}
+        shell: julia --project=dev --color=yes {0}
         run: |
           using Pkg
-          Pkg.add(PackageSpec(name="JuliaFormatter", version="2"))
+          Pkg.instantiate()
           using JuliaFormatter
           format("src")
           format("ext/ConoptMathOptInterfaceExt", verbose=true)

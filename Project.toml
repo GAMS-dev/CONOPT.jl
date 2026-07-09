@@ -5,7 +5,6 @@ repo = "https://github.com/GAMS-dev/CONOPT.jl"
 
 [deps]
 CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
-JuliaFormatter = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
 PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 Preferences = "21216c6a-2e73-6563-6e65-726566657250"
 
@@ -17,7 +16,6 @@ ConoptMathOptInterfaceExt = "MathOptInterface"
 
 [compat]
 CEnum = "0.5.0"
-JuliaFormatter = "0"
 MathOptInterface = "1.48.0"
 PrecompileTools = "1.0.0"
 Preferences = "1.5.2"
