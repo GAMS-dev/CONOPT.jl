@@ -1,7 +1,7 @@
 name = "CONOPT"
 uuid = "d9ad0738-0ae8-416d-b8ee-a56302d35586"
 version = "0.1.0"
-repo = "TODO"
+repo = "https://github.com/GAMS-dev/CONOPT.jl"
 
 [deps]
 CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
