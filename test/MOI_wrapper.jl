@@ -437,6 +437,81 @@ function test_License_Environment_Fallback()
     return nothing
 end
 
+function test_FDEvalIni_Point_Cache()
+    ext = Base.get_extension(CONOPT, :ConoptMathOptInterfaceExt)
+
+    # A small nonlinear problem: x^2 + y^2 <= 1, x * y == 0
+    x = MOI.VariableIndex(1)
+    y = MOI.VariableIndex(2)
+    nlp_model = MOI.Nonlinear.Model()
+    MOI.Nonlinear.add_constraint(nlp_model, :($x^2 + $y^2), MOI.LessThan(1.0))
+    MOI.Nonlinear.add_constraint(nlp_model, :($x * $y), MOI.EqualTo(0.0))
+    evaluator = MOI.Nonlinear.Evaluator(
+        nlp_model, MOI.Nonlinear.SparseReverseMode(), [x, y]
+    )
+    MOI.initialize(evaluator, [:Jac])
+
+    num_jac_nnz = length(MOI.jacobian_structure(evaluator))
+    eval_cache = ext.EvaluationCache(evaluator, 2, 2, num_jac_nnz, 0)
+
+    model = CONOPT.Optimizer()
+    model.inner.user_data = eval_cache
+
+    point = [0.5, 2.0]
+    single_row = Cint[0]
+    all_rows = Cint[0, 1]
+    sentinel = -12345.0
+
+    # First single-row call evaluates the functions and Jacobian and caches the point
+    @test ext._eval_f_ini(model.inner, point, single_row, Cint(3)) == 0
+    @test eval_cache.cached_x == point
+    @test eval_cache.g_cached
+    @test eval_cache.jac_cached
+    @test eval_cache.cached_g ≈ [0.5^2 + 2.0^2, 0.5 * 2.0]
+
+    # Repeated single-row call at the same point must reuse the cache (no re-evaluation)
+    fill!(eval_cache.cached_g, sentinel)
+    fill!(eval_cache.cached_jac, sentinel)
+    @test ext._eval_f_ini(model.inner, copy(point), Cint[1], Cint(3)) == 0
+    @test all(==(sentinel), eval_cache.cached_g)
+    @test all(==(sentinel), eval_cache.cached_jac)
+
+    # Single-row call at a new point must re-evaluate
+    new_point = [1.0, 3.0]
+    @test ext._eval_f_ini(model.inner, new_point, single_row, Cint(1)) == 0
+    @test eval_cache.cached_x == new_point
+    @test eval_cache.cached_g ≈ [1.0^2 + 3.0^2, 1.0 * 3.0]
+    @test eval_cache.g_cached
+    # Only the function values were requested, so the Jacobian is no longer valid
+    @test !eval_cache.jac_cached
+
+    # Requesting the Jacobian at the same point must evaluate it, but not the functions
+    fill!(eval_cache.cached_g, sentinel)
+    @test ext._eval_f_ini(model.inner, new_point, single_row, Cint(2)) == 0
+    @test all(==(sentinel), eval_cache.cached_g)
+    @test all(!=(sentinel), eval_cache.cached_jac)
+    @test eval_cache.jac_cached
+
+    # Multi-row calls always evaluate and invalidate the single-row cache
+    fill!(eval_cache.cached_g, sentinel)
+    @test ext._eval_f_ini(model.inner, new_point, all_rows, Cint(1)) == 0
+    @test eval_cache.cached_g ≈ [1.0^2 + 3.0^2, 1.0 * 3.0]
+    @test !eval_cache.g_cached
+    @test !eval_cache.jac_cached
+
+    # An empty rowlist does nothing
+    fill!(eval_cache.cached_g, sentinel)
+    @test ext._eval_f_ini(model.inner, point, Cint[], Cint(3)) == 0
+    @test all(==(sentinel), eval_cache.cached_g)
+
+    # empty_cache! resets the point cache
+    ext.empty_cache!(eval_cache)
+    @test isempty(eval_cache.cached_x)
+    @test !eval_cache.g_cached
+    @test !eval_cache.jac_cached
+    return nothing
+end
+
 end # module TestConopt
 
 # This line at the end of the file runs all the tests!
