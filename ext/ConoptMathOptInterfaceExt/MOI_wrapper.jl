@@ -76,8 +76,13 @@ mutable struct EvaluationCache
     u_buffer::Vector{Float64}       # a buffer for the multipliers when mapping between CONOPT and MOI
     cached_hess::Vector{Float64}    # store of the hessian values, used as a buffer in the evaluation method
 
+    cached_x::Vector{Float64}   # the point at which cached_g and/or cached_jac were last evaluated
+    g_cached::Bool              # whether cached_g is valid for cached_x
+    jac_cached::Bool            # whether cached_jac is valid for cached_x
+
     function EvaluationCache(
         evaluator::MOI.Nonlinear.Evaluator,
+        num_variables::Int,
         num_constraints::Int,
         num_jac_nnz::Int,
         num_hess_nnz::Int,
@@ -92,11 +97,27 @@ mutable struct EvaluationCache
             zeros(num_constraints),
             zeros(num_constraints),
             zeros(num_hess_nnz),
+            zeros(num_variables),
+            false,
+            false,
         )
     end
 
     function EvaluationCache()
-        return new(nothing, Int[], Float64[], Float64[], Int[], Float64[])
+        return new(
+            nothing,
+            Int[],
+            Int[],
+            Float64[],
+            Float64[],
+            Int[],
+            Int[],
+            Float64[],
+            Float64[],
+            Float64[],
+            false,
+            false,
+        )
     end
 end
 
@@ -110,6 +131,9 @@ function empty_cache!(cache)
     empty!(eval_cache.cons_map)
     empty!(eval_cache.u_buffer)
     empty!(eval_cache.cached_hess)
+    empty!(eval_cache.cached_x)
+    eval_cache.g_cached = false
+    eval_cache.jac_cached = false
 
     return cache
 end
@@ -407,19 +431,53 @@ MOI.eval_hessian_lagrangian(::_EmptyNLPEvaluator, H, x, σ, μ) = nothing
     are stored in the EvaluationCache, and then retrieved in the _eval_f and _eval_jac callback functions.
     This caching is needed because MOI evaluates all constraints or the full Jacobian at once; however,
     CONOPT only needs these row-by-row.
+
+    During presolve, CONOPT typically calls FDEvalIni with a single row at a time, often repeatedly
+    at the same point. To avoid re-evaluating every constraint for each of these calls, the point x
+    is stored when the rowlist has length 1. If a subsequent single-row call is made at the same
+    point, the previously cached function and/or Jacobian values are reused.
 """
 function _eval_f_ini(
-    model::CONOPT.ConoptModel, x::Vector{Float64}, ::Vector{Cint}, mode::Cint
+    model::CONOPT.ConoptModel, x::Vector{Float64}, rowlist::Vector{Cint}, mode::Cint
 )::Cint
     eval_cache = model.user_data::EvaluationCache
 
+    # if there are no rows in the rowlist, then there is nothing to evaluate.
+    if isempty(rowlist)
+        return 0
+    end
+
+    need_g = mode == 1 || mode == 3
+    need_jac = mode == 2 || mode == 3
+
+    # checking whether the function and/or derivative evaluation is actually needed. This is
+    # restricted to the case where the rowlist has length 1, since this is typically during the
+    # presolving stage where each row is evaluated individually.
+    single_row = length(rowlist) == 1
+    if single_row
+        if eval_cache.cached_x != x
+            # a new point invalidates whatever was cached for the old one.
+            eval_cache.g_cached = false
+            eval_cache.jac_cached = false
+            copyto!(resize!(eval_cache.cached_x, length(x)), x)
+        end
+        need_g = need_g && !eval_cache.g_cached
+        need_jac = need_jac && !eval_cache.jac_cached
+    else
+        # multiple rows requested at once, so the stored single-row point no longer applies.
+        eval_cache.g_cached = false
+        eval_cache.jac_cached = false
+    end
+
     try
         # The rowlist can be ignored if we evaluate and cache everything.
-        if mode == 1 || mode == 3
+        if need_g
             MOI.eval_constraint(eval_cache.evaluator, eval_cache.cached_g, x)
+            eval_cache.g_cached = single_row
         end
-        if mode == 2 || mode == 3
+        if need_jac
             MOI.eval_constraint_jacobian(eval_cache.evaluator, eval_cache.cached_jac, x)
+            eval_cache.jac_cached = single_row
         end
     catch e
         if e isa DomainError || e isa DivideError || e isa OverflowError
@@ -783,7 +841,9 @@ function _setup_matrices!(dest::Optimizer, evaluator::MOI.Nonlinear.Evaluator)
     total_hess_nnz = length(raw_hess_str)
 
     # initialising the evaluation cache
-    eval_cache = EvaluationCache(evaluator, num_cons, total_jac_nnz, total_hess_nnz)
+    eval_cache = EvaluationCache(
+        evaluator, num_vars, num_cons, total_jac_nnz, total_hess_nnz
+    )
 
     # creating the matrix structure from the jacobian
     jac_vals = zeros(total_jac_nnz)
