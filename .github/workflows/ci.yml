@@ -46,23 +46,23 @@ jobs:
       - name: Download CONOPT Linux x64
         if: runner.os == 'Linux' && matrix.arch == 'x64'
         run: |
-          wget https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.1/conopt-4_39_1-linux-x86_64.zip
-          unzip conopt-4_39_1-linux-x86_64.zip
+          wget https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.3/conopt-4_39_3-linux-x86_64.zip
+          unzip conopt-4_39_3-linux-x86_64.zip
           echo "CONOPT_LIB=$PWD/conopt-linux-x86_64/lib/libconopt.so.4" >> $GITHUB_ENV
 
       # LINUX (ARM)
       - name: Download CONOPT Linux ARM64
         if: runner.os == 'Linux' && matrix.arch == 'arm64'
         run: |
-          wget https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.1/conopt-4_39_1-linux-arm64.zip
-          unzip conopt-4_39_1-linux-arm64.zip
+          wget https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.3/conopt-4_39_3-linux-arm64.zip
+          unzip conopt-4_39_3-linux-arm64.zip
           echo "CONOPT_LIB=$PWD/conopt-linux-arm64/lib/libconopt.so.4" >> $GITHUB_ENV
 
       # macOS (Intel / x64)
       - name: Download CONOPT macOS x64
         if: runner.os == 'macOS' && matrix.arch == 'x64'
         run: |
-          curl -L -o conopt.zip https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.1/conopt-4_39_1-macos-x86_64.zip
+          curl -L -o conopt.zip https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.3/conopt-4_39_3-macos-x86_64.zip
           unzip conopt.zip
           # Update this filename if macOS uses a different naming scheme like libconopt.4.dylib
           echo "CONOPT_LIB=$PWD/conopt-macos-x86_64/lib/libconopt.dylib" >> $GITHUB_ENV
@@ -71,7 +71,7 @@ jobs:
       - name: Download CONOPT macOS ARM64
         if: runner.os == 'macOS' && matrix.arch == 'aarch64'
         run: |
-          curl -L -o conopt.zip https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.1/conopt-4_39_1-macos-arm64.zip
+          curl -L -o conopt.zip https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.3/conopt-4_39_3-macos-arm64.zip
           unzip conopt.zip
           echo "CONOPT_LIB=$PWD/conopt-macos-arm64/lib/libconopt.dylib" >> $GITHUB_ENV
 
@@ -80,7 +80,7 @@ jobs:
         if: runner.os == 'Windows' && matrix.arch == 'x64'
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.1/conopt-4_39_1-win-x86_64.zip" -OutFile "conopt.zip"
+          Invoke-WebRequest -Uri "https://d37drm4t2jghv5.cloudfront.net/conopt/4.39.3/conopt-4_39_3-win-x86_64.zip" -OutFile "conopt.zip"
           Expand-Archive -Path "conopt.zip" -DestinationPath "."
           # Update conopt4.dll to the exact name extracted from the zip if different
           echo "CONOPT_LIB=$PWD\conopt-win-x86_64\lib\conopt4.dll" >> $env:GITHUB_ENV
